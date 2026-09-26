@@ -73,3 +73,13 @@ def test_change_lines():
     assert "left the server" in signup_change_line(5, None, "left_server", {"nickname": "Bob"})
     details = {"nickname": "Bob", "to": "picked", "to_division": 2}
     assert captain_status_line(details, 9, NAMES) == "🎖️ Captain **Bob** picked for **Division 2** by <@9>"
+
+
+def test_invite_url():
+    from draftcup.permissions import BOT_PERMISSIONS, invite_url
+
+    assert BOT_PERMISSIONS.value == 2251799813803008
+    assert not BOT_PERMISSIONS.manage_messages and not BOT_PERMISSIONS.administrator
+    url = invite_url(123)
+    assert url.startswith("https://discord.com/oauth2/authorize?client_id=123")
+    assert "scope=bot+applications.commands" in url and "permissions=2251799813803008" in url

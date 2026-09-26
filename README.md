@@ -20,9 +20,11 @@ real check.
 1. Create an application at <https://discord.com/developers/applications> and add a bot.
 2. On the **Bot** tab, copy the token and enable the **Server Members Intent** (the bot uses it
    to notice signed-up members leaving).
-3. Invite the bot with the `bot` and `applications.commands` scopes and these permissions in the
-   signup and admin channels: *View Channel*, *Send Messages*, *Embed Links*, *Attach Files*,
-   *Read Message History*, plus *Manage Messages* in the admin channel to pin the status board.
+3. Start the bot once (see below): it logs its invite link at startup, with the right scopes
+   (`bot`, `applications.commands`) and permissions (`2251799813803008`): *View Channel*,
+   *Send Messages*, *Embed Links*, *Attach Files*, *Read Message History* and *Pin Messages*
+   (for the status board). Open the link once per server (test and real). If a channel overrides
+   permissions, make sure the bot keeps these in the signup and admin channels.
 
 ## Running
 

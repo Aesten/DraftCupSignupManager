@@ -10,7 +10,7 @@ from discord.ext import commands
 
 from .db import Database
 from .notify import AdminFeed
-from .permissions import NotAdmin
+from .permissions import BOT_PERMISSIONS, NotAdmin, invite_url
 from .settings import Settings
 from .views.captain_card import CaptainAction
 from .views.signup_post import SignupPostView
@@ -51,6 +51,11 @@ class DraftCupBot(commands.Bot):
         # Global commands: available in every server the bot is in (test and production alike).
         synced = await self.tree.sync()
         log.info("Synced %d slash commands", len(synced))
+        # setup_hook runs once per process, after login, so the application ID is known here.
+        if self.application_id is not None:
+            log.info(
+                "Invite link (permissions %d): %s", BOT_PERMISSIONS.value, invite_url(self.application_id)
+            )
 
     async def on_ready(self) -> None:
         log.info("Logged in as %s in %d server(s)", self.user, len(self.guilds))
