@@ -14,7 +14,7 @@ The output file format is defined in [`draftcup-bot-spec.md`](draftcup-bot-spec.
 - **Discord only**, no web interface. Users interact through buttons, modals and ephemeral replies. Organisers use the **tournament message** in the admin channel (buttons and forms) and a few slash commands.
 - **Two channels:**
   - **Signup channel:** nothing until signups open; then one public signup post with buttons, edited in place (live counts, closed). Every reply to a user is **ephemeral**.
-  - **Admin channel:** private. **Anyone who can see it is an organiser**: access is managed with the channel's own permissions. It holds the welcome message, the pinned tournament message, captain review cards, notifications and exports.
+  - **Admin channel:** private. **Anyone who can see it is an organiser**: access is managed with the channel's own permissions. It holds the welcome message, the tournament message, captain review cards, notifications and exports.
 - **Rules, dates and organisation are announced in the server's own channels.** The bot doesn't repeat them; users confirm they've read them.
 - **Anything the auction app can set is left to it:** format, half budget cap, tier and budget adjustments. The bot computes tiers and budgets from the signup data as a starting point.
 - **Stack:** Python 3.11+, discord.py ≥ 2.7 (radio groups in modals), SQLite through `aiosqlite`. It is self-hosted on the organiser's home server.
@@ -41,7 +41,7 @@ The output file format is defined in [`draftcup-bot-spec.md`](draftcup-bot-spec.
 | `team_size` | `6` | Players per team, **not counting** the captain: 5–10 (app limit). |
 | `division_count` | `2` | 1–5. Divisions are called `Division 1…N` (renameable in the auction app). |
 | `captains_per_division` | `8` | Teams per division. |
-| signup close day | set when opening | Typed as **DD/MM/YYYY** when opening, reopening or changing it. Signups close at **23:59 Paris time (CET/CEST)** that day. |
+| signup close day | set when opening | Typed as **DD/MM/YYYY** when opening, reopening or changing it. Signups close at **23:59 CET/CEST** that day. |
 
 `team_size`, `division_count` and `captains_per_division` carry over to the next tournament; the title and close day don't. The tournament file always says `captainPick` and leaves the half budget cap to the app's default: both are set in the auction app.
 
@@ -123,7 +123,7 @@ Every button replies with *"Signups are closed, contact an organiser."* **My sig
 
 ### 6.1 Tournament message
 
-`/tournament new title:` starts a tournament (archiving the previous one, whose signups must be closed) and posts the **tournament message** in the admin channel, pinned. It is edited a few seconds after every change. `/tournament panel` posts it again (the old one loses its buttons), e.g. when it was deleted or scrolled away.
+`/tournament new title:` starts a tournament (archiving the previous one, whose signups must be closed) and posts the **tournament message** in the admin channel. The bot doesn't pin anything: `/tournament panel` and `/captain list-pending` bring messages back to the bottom of the channel. It is edited a few seconds after every change. `/tournament panel` posts it again (the old one loses its buttons), e.g. when it was deleted or scrolled away.
 
 **Status:**
 

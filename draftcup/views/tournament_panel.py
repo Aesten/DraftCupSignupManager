@@ -199,7 +199,7 @@ class CloseDateModal(OrganiserModal):
         self.day = discord.ui.TextInput(default=input_day(current) or None, placeholder="DD/MM/YYYY", min_length=8, max_length=10)
         self.add_item(discord.ui.Label(
             text="Signups close on",
-            description=f"Day as DD/MM/YYYY. Signups close at {config.close_time} Paris time (CET/CEST) that day.",
+            description=f"Day as DD/MM/YYYY. Signups close at {config.close_time} CET/CEST that day.",
             component=self.day,
         ))
 
@@ -324,7 +324,7 @@ class TournamentView(discord.ui.View):
 
 
 async def refresh_panel(bot: DraftCupBot, guild_id: int, *, repost: bool = False) -> discord.Message | None:
-    """Edits the tournament message in place, or posts and pins it when it's missing (or `repost`)."""
+    """Edits the tournament message in place, or posts it when it's missing (or `repost`)."""
     tournament = await bot.db.active_tournament(guild_id)
     if tournament is None:
         return None
@@ -351,15 +351,11 @@ async def refresh_panel(bot: DraftCupBot, guild_id: int, *, repost: bool = False
     if message is None:
         return None
     await bot.db.update_config(guild_id, status_message_id=message.id)
-    try:
-        await message.pin(reason="Draft Cup tournament message")
-    except discord.HTTPException:
-        log.info("Could not pin the tournament message in guild %s (missing Pin Messages?)", guild_id)
     return message
 
 
 async def retire_panel(bot: DraftCupBot, guild_id: int, reason: str) -> None:
-    """Strips the buttons from the current tournament message and unpins it."""
+    """Strips the buttons from the current tournament message."""
     config = await bot.db.get_config(guild_id)
     channel = await admin_channel(bot, guild_id)
     if config.status_message_id is None or channel is None:
@@ -367,7 +363,6 @@ async def retire_panel(bot: DraftCupBot, guild_id: int, reason: str) -> None:
     old = channel.get_partial_message(config.status_message_id)
     try:
         await old.edit(content=f"-# This message is no longer updated ({reason}).", view=None)
-        await old.unpin()
     except discord.HTTPException:
         pass
     await bot.db.update_config(guild_id, status_message_id=None)

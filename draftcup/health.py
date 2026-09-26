@@ -20,7 +20,7 @@ _BASE = {
     "read_message_history": "Read Message History",
 }
 SIGNUP_CHANNEL_PERMISSIONS = _BASE
-ADMIN_CHANNEL_PERMISSIONS = _BASE | {"pin_messages": "Pin Messages"}
+ADMIN_CHANNEL_PERMISSIONS = _BASE
 
 
 def missing_permissions(channel: discord.abc.GuildChannel, me: discord.Member, needed: dict[str, str]) -> list[str]:

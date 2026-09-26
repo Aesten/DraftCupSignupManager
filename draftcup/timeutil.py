@@ -7,7 +7,7 @@ from datetime import date, datetime, time, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # Draft Cup signups usually close at 23:59 CET/CEST.
-DEFAULT_TIMEZONE = "Europe/Paris"
+DEFAULT_TIMEZONE = "Europe/Paris"  # CET/CEST
 DEFAULT_CLOSE_TIME = "23:59"
 
 _TIME_RE = re.compile(r"^\s*(\d{1,2})(?:[:h.](\d{2}))?\s*$", re.IGNORECASE)

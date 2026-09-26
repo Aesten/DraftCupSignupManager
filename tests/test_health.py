@@ -23,7 +23,7 @@ def bot_member():
 
 
 ALL = discord.Permissions(
-    view_channel=True, send_messages=True, embed_links=True, attach_files=True, read_message_history=True, pin_messages=True
+    view_channel=True, send_messages=True, embed_links=True, attach_files=True, read_message_history=True
 )
 
 
@@ -31,7 +31,7 @@ def test_missing_permissions_names_what_to_allow():
     hidden = FakeChannel("admin", discord.Permissions.none())
     me = bot_member()
     missing = health.missing_permissions(hidden, me, health.ADMIN_CHANNEL_PERMISSIONS)
-    assert missing[0] == "View Channel" and "Pin Messages" in missing
+    assert missing[0] == "View Channel" and "Read Message History" in missing
     text = health.describe(hidden, me, missing)
     assert text.startswith("#admin: allow View Channel") and "@DraftCup Bot" in text
     assert health.missing_permissions(FakeChannel("ok", ALL), me, health.ADMIN_CHANNEL_PERMISSIONS) == []

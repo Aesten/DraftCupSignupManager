@@ -13,15 +13,14 @@ if TYPE_CHECKING:
     from .bot import DraftCupBot
 
 
-# What the bot needs in the signup and admin channels. Pin Messages is for the tournament message; it replaced
-# Manage Messages for pinning, so the bot never gets the right to delete other people's messages.
+# What the bot needs in the signup and admin channels. Nothing more: it never manages other people's
+# messages and doesn't pin its own (/tournament panel and /captain list-pending repost them).
 BOT_PERMISSIONS = discord.Permissions(
     view_channel=True,
     send_messages=True,
     embed_links=True,
     attach_files=True,
     read_message_history=True,
-    pin_messages=True,
 )
 BOT_SCOPES = ("bot", "applications.commands")
 

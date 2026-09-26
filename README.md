@@ -21,9 +21,9 @@ real check.
 2. On the **Bot** tab, copy the token and enable the **Server Members Intent** (the bot uses it
    to notice signed-up members leaving).
 3. Start the bot once (see below): it logs its invite link at startup, with the right scopes
-   (`bot`, `applications.commands`) and permissions (`2251799813803008`): *View Channel*,
-   *Send Messages*, *Embed Links*, *Attach Files*, *Read Message History* and *Pin Messages*
-   (to pin the tournament message). Open the link once per server (test and real).
+   (`bot`, `applications.commands`) and permissions (`117760`): *View Channel*,
+   *Send Messages*, *Embed Links*, *Attach Files* and *Read Message History*. Open the link once
+   per server (test and real).
 4. The admin channel is private: add the bot's role to it (**Edit Channel → Permissions**)
    with the permissions above. `/setup` refuses channels the bot can't use and says what to allow;
    at startup, the console warns about any server whose channels became unusable.
@@ -50,9 +50,10 @@ To run it as a service, see [`deploy/draftcup-signup.service`](deploy/draftcup-s
    organisers with that channel's permissions. Add the bot's role to it (see above).
 2. `/setup signup_channel:#signups admin_channel:#draftcup-admin` (needs *Manage Server*). The bot
    posts a welcome message in the admin channel. Nothing appears in the signup channel yet.
-3. `/tournament new title:Draft Cup #13` posts and pins the **tournament message** with its buttons:
+3. `/tournament new title:Draft Cup #13` posts the **tournament message** with its buttons
+   (`/tournament panel` reposts it if it scrolls away):
    - **⚙️ Settings**: title, team size, divisions, teams per division.
-   - **🟢 Open signups**: type the close day (DD/MM/YYYY). Signups close at 23:59 Paris time that
+   - **🟢 Open signups**: type the close day (DD/MM/YYYY). Signups close at 23:59 CET/CEST that
      day, and the public post goes up in the signup channel with live counts.
    - While open: **📅 Change close date** and **🔒 Close signups**. After closing: **🟢 Reopen**.
 4. Each captain signup posts a card in the admin channel: **Accept** (pick the division) or

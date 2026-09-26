@@ -43,7 +43,7 @@ def close_text(config: GuildConfig) -> str:
 
 
 def check_close_day(config: GuildConfig, day: date) -> None:
-    """The close moment (day at the close time, Paris time) must be in the future."""
+    """The close moment (day at the close time, CET/CEST) must be in the future."""
     if day < local_today(config.timezone) or closing_moment(day, config.close_time, config.timezone) <= utcnow():
         raise ActionError(f"{format_day(day)} at {config.close_time} is already past. Pick a later day.")
 

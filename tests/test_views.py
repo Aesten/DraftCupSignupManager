@@ -133,8 +133,8 @@ def test_welcome_embed():
 def test_invite_url():
     from draftcup.permissions import BOT_PERMISSIONS, invite_url
 
-    assert BOT_PERMISSIONS.value == 2251799813803008
+    assert BOT_PERMISSIONS.value == 117760
     assert not BOT_PERMISSIONS.manage_messages and not BOT_PERMISSIONS.administrator
     url = invite_url(123)
     assert url.startswith("https://discord.com/oauth2/authorize?client_id=123")
-    assert "scope=bot+applications.commands" in url and "permissions=2251799813803008" in url
+    assert "scope=bot+applications.commands" in url and "permissions=117760" in url
