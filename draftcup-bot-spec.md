@@ -49,7 +49,7 @@ The JSON uses camelCase keys. Only `players` and `divisions` are required; every
 |---|---|---|---|
 | `title` | string | no | `"New tournament"`. Max 80 chars. |
 | `format` | `"randomPick"` \| `"captainPick"` | no | `"randomPick"` |
-| `tierMinimums` | array of 5 numbers | no | `[2.0, 1.5, 1.0, 0.5, 0.1]`. Captain Pick only; index 0 = tier 1. |
+| `tierMinimums` | array of 5 numbers | no | `[2.0, 1.5, 1.0, 0.5, 0.1]`. Used in Captain Pick (kept in Random Pick); index 0 = tier 1. |
 | `players` | array of Player | **yes** | The pool. |
 | `divisions` | array of Division | **yes** | One per auction. |
 | `id` | GUID string | no | Generated if missing (see §6). |
@@ -62,7 +62,7 @@ Do **not** write `session` (auction state), `schemaVersion`, `createdAt` or `upd
 |---|---|---|---|
 | `name` | string | yes | Max 40 chars (longer is cut). Should be unique in the pool. |
 | `classes` | array of strings | yes in practice | Codes `"inf"`, `"arc"`, `"cav"`. Also accepted, case-insensitive: `infantry`, `archer`, `archers`, `ranged`, `cavalry`. Unknown values are kept as-is (lowercased) and won't match any class column, so only send the three codes. **Captain Pick: exactly one** (only the first is kept). |
-| `tier` | integer 1–5 | Captain Pick only | Omit entirely in Random Pick. |
+| `tier` | integer 1–5 | Captain Pick only | Optional in Random Pick: kept by the import and harmless when unused, so the auction can switch modes in the app. |
 | `id` | GUID string | no | Generated if missing. |
 
 ### Division
@@ -178,8 +178,8 @@ Files over **20 MB** are refused (a realistic file is a few KB).
 
   A newer bot file therefore **replaces the whole pool**, and any edits made in the app since (tiers, fixes) are lost. Avoid this path unless the bot is the single source of truth. If you use it, keep the tournament, player, division and captain `id`s stable across exports.
 - **Late signups after the import:** export a **player list** instead of a tournament. The auctioneer imports it with **Import…** in the pool, which adds only the names not already in the pool (and adds them to a running auction too). Either format works:
-  - JSON: `{ "players": [ { "name": "Frank", "classes": ["cav"], "tier": 3 } ] }` (no `divisions` key, and `tier` only for Captain Pick);
-  - CSV: header `Player,INF,ARC,CAV,Tier`, then rows like `Frank,,,x,3` (an `x` marks each class; drop the `Tier` column for Random Pick).
+  - JSON: `{ "players": [ { "name": "Frank", "classes": ["cav"], "tier": 3 } ] }` (no `divisions` key; `tier` required in Captain Pick, optional in Random Pick);
+  - CSV: header `Player,INF,ARC,CAV,Tier`, then rows like `Frank,,,x,3` (an `x` marks each class; the `Tier` column is optional in Random Pick).
 
 ## 7. Exporter checklist
 
@@ -188,7 +188,7 @@ Files over **20 MB** are refused (a realistic file is a few KB).
 - [ ] Player names ≤ 40 chars, trimmed, unique (case-insensitive).
 - [ ] Class codes are `inf` / `arc` / `cav`.
 - [ ] Captain Pick: exactly one class and a `tier` 1–5 for every player.
-- [ ] Random Pick: no `tier` field.
+- [ ] Random Pick: `tier` optional (kept by the import, used if the app switches to Captain Pick).
 - [ ] Every division has ≥ 2 captains, each with a unique name, one class and a budget in 0.1–30 (one decimal).
 - [ ] `teamSize` in 5–10; at least `captains × teamSize` players in the pool.
 - [ ] Captains are not also listed as players.

@@ -43,7 +43,7 @@ Admins set these values with `/config` (§7). Defaults are shown.
 | `timezone` | `UTC` | IANA name, e.g. `Europe/Paris`. Used to read the dates admins enter. |
 | `tournament_date` | none | Match day (usually a Sunday). Shown in the player attendance text. |
 | `auction_date` | none | Auction day (usually a Saturday). Shown in the captain attendance text. |
-| `closes_at` | none | When signups close automatically. |
+| `closes_at` | none | When signups close automatically. Required to open or reopen signups; admins can move it while signups are open. |
 | `rules_url` | none | A link shown in the agreement step. |
 | `admin_roles` | none | Discord roles with admin rights. |
 | `admin_users` | none | Individual users with admin rights. |
@@ -171,9 +171,9 @@ All commands are slash commands restricted to admins, and all replies are epheme
 | `/config show` · `/config set <key> <value>` | Views or edits the settings in §3. Dates are entered as `YYYY-MM-DD HH:MM` in the configured timezone. |
 | `/admins add/remove role:` · `/admins add/remove user:` | Manages admin roles and users. |
 | `/division rename index name` | Renames a division. |
-| `/signups open format: [closes_at]` | Opens signups for the chosen format (`captainPick` or `randomPick`) and optionally schedules the close. The format is shown on the signup post. |
-| `/signups close` | Closes signups immediately. |
-| `/signups reopen [closes_at]` | Reopens after a close. |
+| `/signups open format: closes_at:` | Opens signups for the chosen format (`captainPick` or `randomPick`) and schedules the close. Both are required; `closes_at` must be in the future. The format and close time are shown on the signup post. |
+| `/signups close` | Closes signups immediately, before the scheduled time. |
+| `/signups reopen closes_at:` | Reopens after a close, with a new close time (required, in the future). |
 | `/signup view user:` | Shows a signup. The user can be picked as a Discord member, or by nickname with autocomplete. |
 | `/signup edit user:` | Opens the signup modal pre-filled, with no agreement step and no open/closed check. |
 | `/signup add user:` | Creates a signup for a member, e.g. one posted by DM. It asks for the role, then opens the modal. |
@@ -198,7 +198,7 @@ draft ──/signups open──▶ open ──closes_at reached or /signups clos
                           └──────────────── /signups reopen ────────────┘
 ```
 
-- **draft:** configuration only, and the signup buttons are disabled. Opening requires choosing a format.
+- **draft:** configuration only, and the signup buttons are disabled. Opening requires choosing a format and a close date.
 - **open:** users can sign up, edit and withdraw.
 - **closed:** only admins can change data. Captain picking can happen in any state, but normally happens after closing.
 - **Scheduled close:** the bot checks `closes_at` every 30 s and also at startup, so a close missed while the bot was down still happens when it restarts.
