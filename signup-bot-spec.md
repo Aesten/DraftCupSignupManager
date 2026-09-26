@@ -16,6 +16,7 @@ The output file format is defined in [`draftcup-bot-spec.md`](draftcup-bot-spec.
   - **Signup channel:** nothing until signups open; then one public signup post with buttons, edited in place (live counts, closed). Every reply to a user is **ephemeral**.
   - **Admin channel:** private. **Anyone who can see it is an organiser**: access is managed with the channel's own permissions. It holds the welcome message, the tournament message, captain review cards, notifications and exports.
 - **Rules, dates and organisation are announced in the server's own channels.** The bot doesn't repeat them; users confirm they've read them.
+- **Member-facing text speaks in terms of registering**, never of what the bot does internally (no "saving", "database", "signup ID"): *Registration not complete*, *You're no longer registered*…
 - **Anything the auction app can set is left to it:** format, half budget cap, tier and budget adjustments. The bot computes tiers and budgets from the signup data as a starting point.
 - **Stack:** Python 3.11+, discord.py ≥ 2.7 (radio groups in modals), SQLite through `aiosqlite`. It is self-hosted on the organiser's home server.
 
@@ -104,7 +105,7 @@ The buttons use persistent `custom_id`s so they keep working after a bot restart
    - Captain: *"I have read the rules and can attend the auction and the tournament. If I'm not accepted as captain, I'll play as a player."*
 3. Clicking the button opens the **modal**, titled *Player signup* or *Captain signup*, with 5 fields: Nickname, Steam profile, Class (radio), Highest division (optional), IGL (radio).
 4. Discord itself enforces the required fields and lengths inside the form (nickname 2–24 characters, division 1 letter). On submit, the bot checks the rest (§4): allowed characters, Steam link format, nickname not taken.
-   - **Error:** Discord can't show errors inside a form or reopen it directly from a submission, so an ephemeral message lists every problem, with a **Try again** button that reopens the form pre-filled with what the user typed.
+   - **Error:** Discord can't show errors inside a form or reopen it directly from a submission, so an ephemeral message *"Registration not complete. Please fix the following, then try again:"* lists every problem, with a **Try again** button that reopens the form pre-filled with what the user typed.
    - **Success:** an ephemeral summary titled *Player Registration Complete* / *Captain Registration Complete*, listing Nickname, Class, Division, IGL and Steam. The admin channel gets a notice (§6.3). **My signup** shows the same summary titled *Player Registration* / *Captain Registration*.
 
 ### 5.2 Editing and withdrawing (while signups are open)
@@ -152,7 +153,7 @@ Every button replies with *"Signups are closed, contact an organiser."* **My sig
 Every captain signup (a new one, a switch to captain, or `/captain add`) posts a **card** in the admin channel with the signup details, the tier and the computed budget, and two buttons:
 
 - **Accept** → a division menu (each division shows `accepted/captains_per_division`); picking one accepts the captain into it. A full division is refused.
-- **Reject** → confirm; the signup becomes a **player** signup (same data) and the member gets a **DM**: *"Your captain signup for <title> wasn't accepted. You're still signed up, as a player."* If their DMs are closed, organisers are told to message them.
+- **Reject** → confirm; the signup becomes a **player** signup (same data) and the member gets a **DM**: *"Your captain registration for <title> wasn't accepted. You're still registered, as a player."* If their DMs are closed, organisers are told to message them.
 
 Once decided, the card shows the outcome and who decided, without buttons. Changes go through commands:
 

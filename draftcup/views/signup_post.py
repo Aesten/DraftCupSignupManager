@@ -55,7 +55,7 @@ def build_embed(config: GuildConfig, tournament: Tournament, signups: list[Signu
         value=(
             "Read the rules and announcements first. Then pick **Player** or **Captain**, confirm, and fill in the form.\n"
             "Captain signups are reviewed by the organisers; if you're not accepted, you play as a player.\n"
-            "Use **My signup** to check, edit or withdraw your signup while signups are open."
+            "Use **My signup** to check, change or withdraw your registration while signups are open."
         ),
         inline=False,
     )

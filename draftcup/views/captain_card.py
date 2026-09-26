@@ -250,10 +250,10 @@ async def accept_captain(bot: DraftCupBot, guild_id: int, signup_id: int, divisi
 
 
 _DM_TEXT = {
-    "captain_rejected": "Your **captain** signup for **{title}** on **{guild}** wasn't accepted. "
-    "You're still signed up, as a **player**. Use **My signup** on the signup post to check or change it.",
-    "captain_revoked": "Your acceptance as **captain** for **{title}** on **{guild}** was withdrawn. "
-    "You're still signed up, as a **player**. Use **My signup** on the signup post to check or change it.",
+    "captain_rejected": "Your **captain** registration for **{title}** on **{guild}** wasn't accepted. "
+    "You're still registered, as a **player**. Use **My signup** on the signup post to check or change it.",
+    "captain_revoked": "You're no longer a **captain** for **{title}** on **{guild}**. "
+    "You're still registered, as a **player**. Use **My signup** on the signup post to check or change it.",
 }
 
 

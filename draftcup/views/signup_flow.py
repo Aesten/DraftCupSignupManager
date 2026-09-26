@@ -90,7 +90,7 @@ async def show_my_signup(interaction: Interaction) -> None:
     tournament = await db.active_tournament(interaction.guild.id)
     signup = await db.get_active_signup(tournament.id, interaction.user.id) if tournament else None
     if signup is None:
-        await interaction.response.send_message("You're not signed up.", ephemeral=True)
+        await interaction.response.send_message("You're not registered for this tournament.", ephemeral=True)
         return
     if await _is_open(interaction):
         await interaction.response.send_message(
@@ -98,7 +98,7 @@ async def show_my_signup(interaction: Interaction) -> None:
         )
     else:
         await interaction.response.send_message(
-            "Signups are closed, so this is read-only. Contact an organiser for any change.",
+            "Signups are closed, so your registration can no longer be changed. Contact an organiser if something needs fixing.",
             embed=signup_embed(signup),
             ephemeral=True,
         )
@@ -115,11 +115,11 @@ async def send_agreement(
     *,
     edit_message: bool = False,
 ) -> None:
-    lines = [f"## {role.label} signup"]
+    lines = [f"## {role.label} Registration"]
     if switching_from is not None:
         lines.append(
-            f"You're currently signed up as a **{switching_from.label.lower()}**. "
-            f"Continuing switches your signup to **{role.label.lower()}**."
+            f"You're currently registered as a **{switching_from.label.lower()}**. "
+            f"Continuing changes your registration to **{role.label.lower()}**."
         )
     lines.append(f"> {agreement_text(role)}")
     content = "\n".join(lines)
@@ -163,7 +163,7 @@ class SignupModal(discord.ui.Modal):
         *,
         target: tuple[int, str] | None = None,
     ) -> None:
-        title = f"{role.label} signup" if target is None else f"{role.label} signup of {target[1]}"
+        title = f"{role.label} Registration" if target is None else f"{role.label} Registration: {target[1]}"
         super().__init__(title=title[:45], timeout=VIEW_TIMEOUT)
         self.role = role
         self.form = form
@@ -231,7 +231,7 @@ class SignupModal(discord.ui.Modal):
         fields, errors = rules.validate_form(form)
         tournament = await db.active_tournament(interaction.guild.id)
         if tournament is None:
-            await interaction.response.send_message("There's no tournament running.", ephemeral=True)
+            await interaction.response.send_message("Signups aren't open right now.", ephemeral=True)
             return
         if fields is not None:
             try:
@@ -244,21 +244,21 @@ class SignupModal(discord.ui.Modal):
         if errors:
             retry = RetryView(self.role, form, self.agreed_at, target=self.target)
             await interaction.response.send_message(
-                "The signup couldn't be saved:\n" + "\n".join(f"- {error}" for error in errors),
+                "❌ **Registration not complete.** Please fix the following, then try again:\n" + "\n".join(f"- {error}" for error in errors),
                 view=retry,
                 ephemeral=True,
             )
             return
 
-        status = {"signup": "Complete", "unchanged": "(nothing changed)"}.get(kind, "Updated")
+        status = {"signup": "Complete", "unchanged": "(no changes)"}.get(kind, "Updated")
         embed = signup_embed(signup, status)
-        content = f"Saved for <@{target_id}>." if self.target is not None else None
+        content = f"Registration of <@{target_id}>:" if self.target is not None else None
         await interaction.response.send_message(content, embed=embed, ephemeral=True)
         await events.signup_changed(interaction.client, interaction.guild.id, signup, kind, details, interaction.user.id)
 
     async def on_error(self, interaction: Interaction, error: Exception) -> None:
         log.exception("Signup modal failed", exc_info=error)
-        message = "Something went wrong while saving your signup. Please try again or contact an organiser."
+        message = "Something went wrong and your registration didn't go through. Please try again, or contact an organiser."
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=True)
         else:
@@ -300,7 +300,7 @@ class MySignupView(discord.ui.View):
             return None
         signup = await interaction.client.db.get_signup(self.signup_id)
         if signup is None or signup.withdrawn_at is not None:
-            await interaction.response.send_message("This signup no longer exists.", ephemeral=True)
+            await interaction.response.send_message("This registration was withdrawn.", ephemeral=True)
             return None
         return signup
 
@@ -323,7 +323,7 @@ class MySignupView(discord.ui.View):
         signup = await self._current(interaction)
         if signup is not None:
             await interaction.response.edit_message(
-                content="Withdraw your signup? Your nickname becomes available to others.",
+                content="Withdraw your registration? You can register again while signups are open.",
                 embed=None,
                 view=ConfirmWithdrawView(signup.id),
             )
@@ -347,13 +347,14 @@ class ConfirmWithdrawView(discord.ui.View):
             return
         signup = await interaction.client.db.withdraw_signup(self.signup_id, interaction.user.id)
         if signup is None:
-            await interaction.response.edit_message(content="This signup was already withdrawn.", view=None)
+            await interaction.response.edit_message(content="This registration was already withdrawn.", view=None)
             return
-        who = f"The signup of **{signup.nickname}** was" if self.admin else "Your signup was"
-        await interaction.response.edit_message(content=f"{who} withdrawn.", view=None)
+        text = f"**{signup.nickname}** is no longer registered." if self.admin else "You're no longer registered for this tournament."
+        await interaction.response.edit_message(content=text, view=None)
         details = {"role": signup.role.value, "nickname": signup.nickname}
         await events.signup_changed(interaction.client, interaction.guild.id, signup, "withdraw", details, interaction.user.id)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: Interaction, _: discord.ui.Button) -> None:
-        await interaction.response.edit_message(content="Nothing changed.", view=None)
+        text = "Cancelled: nothing changed." if self.admin else "Cancelled: your registration is unchanged."
+        await interaction.response.edit_message(content=text, view=None)
