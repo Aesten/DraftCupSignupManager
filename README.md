@@ -24,8 +24,10 @@ real check.
 3. Start the bot once (see below): it logs its invite link at startup, with the right scopes
    (`bot`, `applications.commands`) and permissions (`2251799813803008`): *View Channel*,
    *Send Messages*, *Embed Links*, *Attach Files*, *Read Message History* and *Pin Messages*
-   (to pin the dashboard). Open the link once per server (test and real). If a channel overrides
-   permissions, make sure the bot keeps these in the signup and admin channels.
+   (to pin the dashboard). Open the link once per server (test and real).
+4. The admin channel is usually private: add the bot's role to it (**Edit Channel → Permissions**)
+   with the permissions above. `/setup` refuses channels the bot can't use and says what to allow;
+   at startup, the console warns about any server whose channels became unusable.
 
 ## Running
 

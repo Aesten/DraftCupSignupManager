@@ -10,6 +10,7 @@ import discord
 
 from . import events, exports
 from .db import utcnow
+from .health import channel_problems
 from .models import ExportType, GuildConfig, State
 from .timeutil import closing_moment, discord_ts, format_day
 from .views import captain_card, signup_post
@@ -117,6 +118,9 @@ async def open_signups(bot: DraftCupBot, guild_id: int, actor_id: int) -> discor
     missing = missing_for_opening(config)
     if missing:
         raise ActionError("Set these first: " + ", ".join(missing) + ".")
+    problems = channel_problems(bot, config)
+    if problems:
+        raise ActionError("I can't use the channels yet:\n" + "\n".join(f"- {p}" for p in problems))
     await bot.db.set_state(tournament.id, State.OPEN)
     try:
         message = await signup_post.publish(bot, guild_id)
@@ -191,7 +195,11 @@ async def export(interaction: discord.Interaction[DraftCupBot], export_type: Exp
         files=files,
     )
     if message is None:
-        await interaction.followup.send("❌ Couldn't post in the admin channel (check my permissions there).", ephemeral=True)
+        reason = bot.feed.unreachable.get(guild_id, "see the bot logs")
+        problems = "".join(f"\n- {p}" for p in channel_problems(bot, config))
+        await interaction.followup.send(
+            f"❌ Couldn't post the export in the admin channel: {reason}.{problems}", ephemeral=True
+        )
         return
     await bot.db.record_export(tournament.id, export_type, tournament.revision, interaction.user.id)
     await interaction.followup.send(f"✅ Posted: {message.jump_url}{warnings}", ephemeral=True)

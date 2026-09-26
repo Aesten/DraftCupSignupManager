@@ -9,6 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from ..health import ADMIN_CHANNEL_PERMISSIONS, SIGNUP_CHANNEL_PERMISSIONS, describe, missing_permissions
 from ..models import State
 from ..permissions import admin_only
 from ..views import dashboard, signup_post
@@ -18,12 +19,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_NEEDED_IN_CHANNELS = ("view_channel", "send_messages", "embed_links", "attach_files", "read_message_history")
-
-
-def _missing_permissions(channel: discord.TextChannel, me: discord.Member, extra: tuple[str, ...] = ()) -> list[str]:
-    permissions = channel.permissions_for(me)
-    return [name.replace("_", " ") for name in _NEEDED_IN_CHANNELS + extra if not getattr(permissions, name)]
+_HOW_TO_FIX = (
+    "In each channel: **Edit Channel → Permissions → Add members or roles**, pick the bot's role, allow the "
+    "permissions above, save, then run `/setup` again."
+)
 
 
 class AdminCog(commands.Cog):
@@ -50,16 +49,16 @@ class AdminCog(commands.Cog):
         guild_id = interaction.guild.id
         me = interaction.guild.me
         problems = [
-            f"{channel.mention}: {', '.join(missing)}"
-            for channel, missing in (
-                (signup_channel, _missing_permissions(signup_channel, me)),
-                (admin_channel, _missing_permissions(admin_channel, me, ("pin_messages",))),
-            )
-            if missing
+            describe(channel, me, missing)
+            for channel, needed in ((signup_channel, SIGNUP_CHANNEL_PERMISSIONS), (admin_channel, ADMIN_CHANNEL_PERMISSIONS))
+            if (missing := missing_permissions(channel, me, needed))
         ]
         if problems:
             await interaction.response.send_message(
-                "❌ I'm missing permissions:\n" + "\n".join(f"- {p}" for p in problems), ephemeral=True
+                "❌ Nothing was saved: I can't use these channels yet.\n"
+                + "\n".join(f"- {p}" for p in problems)
+                + f"\n\n{_HOW_TO_FIX}",
+                ephemeral=True,
             )
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -75,7 +74,12 @@ class AdminCog(commands.Cog):
         admin_moved = old.admin_channel_id != admin_channel.id
         message = await dashboard.refresh_dashboard(self.bot, guild_id, repost=admin_moved)
         if message is None:
-            await interaction.followup.send(f"❌ I couldn't post in {admin_channel.mention}.", ephemeral=True)
+            reason = self.bot.feed.unreachable.get(guild_id, "unknown error, see the bot logs")
+            await interaction.followup.send(
+                f"❌ The channels are saved, but I couldn't post the dashboard in {admin_channel.mention}: {reason}.\n"
+                f"{_HOW_TO_FIX}",
+                ephemeral=True,
+            )
             return
 
         tournament = await db.active_tournament(guild_id)

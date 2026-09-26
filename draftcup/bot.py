@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from .db import Database
+from .health import channel_problems
 from .notify import AdminFeed
 from .permissions import BOT_PERMISSIONS, NotAdmin, invite_url
 from .settings import Settings
@@ -37,6 +38,7 @@ class DraftCupBot(commands.Bot):
         self.settings = settings
         self.feed = AdminFeed(self)
         self.refresher = Refresher(self)
+        self._channels_checked = False
         self.tree.on_error = self.on_app_command_error
 
     async def setup_hook(self) -> None:
@@ -61,6 +63,14 @@ class DraftCupBot(commands.Bot):
 
     async def on_ready(self) -> None:
         log.info("Logged in as %s in %d server(s)", self.user, len(self.guilds))
+        # on_ready also fires after reconnects: check the channels once per process.
+        if self._channels_checked:
+            return
+        self._channels_checked = True
+        for guild in self.guilds:
+            config = await self.db.get_config(guild.id)
+            for problem in channel_problems(self, config):
+                log.warning("Server %r (%s): %s", guild.name, guild.id, problem)
 
     async def close(self) -> None:
         await super().close()

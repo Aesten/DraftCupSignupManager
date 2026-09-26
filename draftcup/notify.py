@@ -45,6 +45,25 @@ class AdminFeed:
         self.bot = bot
         self._groups: dict[int, tuple[discord.Message, float]] = {}
         self._locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+        # guild ID → why the last post failed; cleared by the next successful post.
+        self.unreachable: dict[int, str] = {}
+
+    def _failed(self, guild_id: int, error: discord.HTTPException) -> None:
+        if isinstance(error, discord.Forbidden):
+            reason = "missing permissions (the bot needs View Channel, Send Messages, Embed Links, Attach Files, Read Message History)"
+        elif isinstance(error, discord.NotFound):
+            reason = "the channel no longer exists (run /setup again)"
+        else:
+            log.exception("Could not post in the admin channel of guild %s", guild_id, exc_info=error)
+            reason = f"Discord error {error.status}"
+        if self.unreachable.get(guild_id) != reason:
+            # Logged once per problem instead of once per message.
+            log.warning("Can't post in the admin channel of guild %s: %s", guild_id, reason)
+        self.unreachable[guild_id] = reason
+
+    def _succeeded(self, guild_id: int) -> None:
+        if self.unreachable.pop(guild_id, None) is not None:
+            log.info("The admin channel of guild %s works again", guild_id)
 
     async def line(self, guild_id: int, text: str) -> None:
         """Posts one line, grouped with recent ones. Mentions render but never ping anyone."""
@@ -65,9 +84,10 @@ class AdminFeed:
                         pass  # deleted, or not editable: start a new group
             try:
                 message = await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
-            except discord.HTTPException:
-                log.exception("Could not post in the admin channel of guild %s", guild_id)
+            except discord.HTTPException as exc:
+                self._failed(guild_id, exc)
                 return
+            self._succeeded(guild_id)
             self._groups[guild_id] = (message, time.monotonic())
 
     async def send(self, guild_id: int, content: str | None = None, **kwargs: Any) -> discord.Message | None:
@@ -79,10 +99,12 @@ class AdminFeed:
                 return None
             kwargs.setdefault("allowed_mentions", discord.AllowedMentions.none())
             try:
-                return await channel.send(content, **kwargs)
-            except discord.HTTPException:
-                log.exception("Could not post in the admin channel of guild %s", guild_id)
+                message = await channel.send(content, **kwargs)
+            except discord.HTTPException as exc:
+                self._failed(guild_id, exc)
                 return None
+            self._succeeded(guild_id)
+            return message
 
 
 async def notify_admins(bot: DraftCupBot, guild_id: int, text: str) -> None:

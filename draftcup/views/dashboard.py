@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 
 import discord
 
-from .. import exports, rules
+from .. import exports, health, rules
 from ..models import CaptainStatus, ExportRecord, ExportType, GuildConfig, Role, Signup, State, Tournament
 from ..notify import admin_channel
 from ..permissions import interaction_is_admin
@@ -64,6 +64,7 @@ def build_embed(
     signups: list[Signup],
     division_names: list[str],
     latest_exports: dict[ExportType, ExportRecord],
+    channel_problems: list[str] | None = None,
 ) -> discord.Embed:
     if tournament.state is State.OPEN:
         state = f"🟢 **Signups open**, closing {discord_ts(config.closes_at, 'R')}"
@@ -76,7 +77,10 @@ def build_embed(
         colour = discord.Colour.light_grey()
     embed = discord.Embed(title=f"🛠️ {config.title}", description=state, colour=colour)
     embed.add_field(name="Setup", value=_setup_field(config, division_names), inline=False)
-    embed.add_field(name="Access", value=_access_field(config), inline=False)
+    access = _access_field(config)
+    if channel_problems:
+        access += "\n" + "\n".join(f"⚠️ {p[:200]}" for p in channel_problems)
+    embed.add_field(name="Access", value=access[:1024], inline=False)
 
     players = [s for s in signups if s.role is Role.PLAYER]
     candidates = exports.captain_candidates(signups)
@@ -205,7 +209,7 @@ async def refresh_dashboard(bot: DraftCupBot, guild_id: int, *, repost: bool = F
     signups = await bot.db.list_active_signups(tournament.id)
     names = await bot.db.division_names(tournament.id, config.division_count)
     latest = await bot.db.latest_exports(tournament.id)
-    embed = build_embed(config, tournament, signups, names, latest)
+    embed = build_embed(config, tournament, signups, names, latest, health.channel_problems(bot, config))
     view = DashboardView(tournament.state)
 
     if config.status_message_id is not None and not repost:
