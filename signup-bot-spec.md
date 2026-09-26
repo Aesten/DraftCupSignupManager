@@ -100,12 +100,12 @@ The buttons use persistent `custom_id`s so they keep working after a bot restart
 
 1. The user clicks **Sign up as Player** or **Sign up as Captain**.
 2. The bot replies with an ephemeral **agreement step** with an **I agree and can attend** button:
-   - Player: *"I have read the tournament rules and announcements, and I can attend the tournament on the announced date."*
-   - Captain: *"I have read the tournament rules and announcements, and I can attend both the auction and the tournament on the announced dates. If I'm not accepted as captain, I'll play as a player."*
+   - Player: *"I have read the rules and can attend the tournament."*
+   - Captain: *"I have read the rules and can attend the auction and the tournament. If I'm not accepted as captain, I'll play as a player."*
 3. Clicking the button opens the **modal**, titled *Player signup* or *Captain signup*, with 5 fields: Nickname, Steam profile, Class (radio), Highest division (optional), IGL (radio).
-4. On submit, the bot validates every field (§4):
-   - **Error:** an ephemeral message lists every problem and offers a **Try again** button, which reopens the modal pre-filled with what the user typed.
-   - **Success:** an ephemeral confirmation shows a summary of the signup. The admin channel gets a notice (§6.3).
+4. Discord itself enforces the required fields and lengths inside the form (nickname 2–24 characters, division 1 letter). On submit, the bot checks the rest (§4): allowed characters, Steam link format, nickname not taken.
+   - **Error:** Discord can't show errors inside a form or reopen it directly from a submission, so an ephemeral message lists every problem, with a **Try again** button that reopens the form pre-filled with what the user typed.
+   - **Success:** an ephemeral summary titled *Player Registration Complete* / *Captain Registration Complete*, listing Nickname, Class, Division, IGL and Steam. The admin channel gets a notice (§6.3). **My signup** shows the same summary titled *Player Registration* / *Captain Registration*.
 
 ### 5.2 Editing and withdrawing (while signups are open)
 

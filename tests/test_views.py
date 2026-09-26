@@ -110,9 +110,27 @@ async def test_public_post_counts():
     assert "closed" in signup_post.build_embed(config, closed, signups).description
 
 
-def test_agreement_texts_mention_no_dates():
-    assert "auction" in agreement_text(Role.CAPTAIN) and "play as a player" in agreement_text(Role.CAPTAIN)
-    assert "auction" not in agreement_text(Role.PLAYER) and "read the tournament rules" in agreement_text(Role.PLAYER)
+def test_agreement_texts():
+    assert agreement_text(Role.PLAYER) == "I have read the rules and can attend the **tournament**."
+    captain_text = agreement_text(Role.CAPTAIN)
+    assert "can attend the **auction** and the **tournament**" in captain_text and "play as a player" in captain_text
+
+
+def test_signup_summary():
+    from draftcup.views.signup_flow import signup_embed
+
+    signup = make_signup("Aestens", player_class="cav", division="A")
+    embed = signup_embed(signup, "Complete")
+    assert embed.title == "Player Registration Complete"
+    assert embed.description.splitlines() == [
+        "**Nickname:** Aestens",
+        "**Class:** Cavalry",
+        "**Division:** A",
+        "**IGL:** No",
+        "**Steam:** https://steamcommunity.com/id/Aestens/",
+    ]
+    assert signup_embed(captain("Cap", division="")).title == "Captain Registration"
+    assert "**Division:** None" in signup_embed(captain("Cap2", division="")).description
 
 
 def test_change_lines():

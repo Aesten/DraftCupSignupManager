@@ -38,26 +38,24 @@ def agreement_text(role: Role) -> str:
     """Rules and dates are announced in the server's own channels; users confirm they read them."""
     if role is Role.CAPTAIN:
         return (
-            "I have read the tournament rules and announcements, and I can attend both the **auction** and the "
-            "**tournament** on the announced dates. If I'm not accepted as captain, I'll play as a player."
+            "I have read the rules and can attend the **auction** and the **tournament**. "
+            "If I'm not accepted as captain, I'll play as a player."
         )
-    return (
-        "I have read the tournament rules and announcements, and I can attend the **tournament** on the "
-        "announced date."
-    )
+    return "I have read the rules and can attend the **tournament**."
 
 
-def signup_embed(signup: Signup, heading: str) -> discord.Embed:
-    """User-facing summary. Tier and budget are left out on purpose: they're for organisers."""
-    embed = discord.Embed(title=heading, colour=discord.Colour.blurple())
-    embed.add_field(name="Role", value=signup.role.label)
-    embed.add_field(name="Nickname", value=signup.nickname)
-    embed.add_field(name="Class", value=rules.CLASS_LABELS[signup.player_class])
-    embed.add_field(name="Highest division", value=signup.highest_division or "None")
-    embed.add_field(name="In-game leader", value="Yes" if signup.igl else "No")
-    embed.add_field(name="Steam", value=signup.steam_url, inline=False)
-    embed.set_footer(text=f"Agreed to the rules on {signup.agreed_at:%Y-%m-%d %H:%M} UTC")
-    return embed
+def signup_embed(signup: Signup, status: str = "") -> discord.Embed:
+    """User-facing summary, titled "<Role> Registration[ <status>]". Tier and budget are left out on
+    purpose: they're for organisers."""
+    title = f"{signup.role.label} Registration" + (f" {status}" if status else "")
+    lines = [
+        f"**Nickname:** {signup.nickname}",
+        f"**Class:** {rules.CLASS_LABELS[signup.player_class]}",
+        f"**Division:** {signup.highest_division or 'None'}",
+        f"**IGL:** {'Yes' if signup.igl else 'No'}",
+        f"**Steam:** {signup.steam_url}",
+    ]
+    return discord.Embed(title=title, description="\n".join(lines), colour=discord.Colour.blurple())
 
 
 # --------------------------------------------------------------------- entry points
@@ -96,12 +94,12 @@ async def show_my_signup(interaction: Interaction) -> None:
         return
     if await _is_open(interaction):
         await interaction.response.send_message(
-            embed=signup_embed(signup, "Your signup"), view=MySignupView(signup), ephemeral=True
+            embed=signup_embed(signup), view=MySignupView(signup), ephemeral=True
         )
     else:
         await interaction.response.send_message(
             "Signups are closed, so this is read-only. Contact an organiser for any change.",
-            embed=signup_embed(signup, "Your signup"),
+            embed=signup_embed(signup),
             ephemeral=True,
         )
 
@@ -172,11 +170,14 @@ class SignupModal(discord.ui.Modal):
         self.agreed_at = agreed_at
         self.target = target
 
+        # Discord checks lengths and required fields inside the form; everything else is checked on submit.
         self.nickname = discord.ui.TextInput(
-            max_length=rules.NICKNAME_MAX, default=form.nickname or None, placeholder="Your in-game name"
+            min_length=rules.NICKNAME_MIN, max_length=rules.NICKNAME_MAX, default=form.nickname or None,
+            placeholder="Your in-game name",
         )
         self.steam = discord.ui.TextInput(
-            max_length=120, default=form.steam_url or None, placeholder="https://steamcommunity.com/id/…"
+            min_length=len("steamcommunity.com/id/xx"), max_length=120, default=form.steam_url or None,
+            placeholder="https://steamcommunity.com/id/…",
         )
         self.player_class = discord.ui.RadioGroup(
             options=[
@@ -249,10 +250,10 @@ class SignupModal(discord.ui.Modal):
             )
             return
 
-        heading = {"signup": "✅ You're signed up!", "unchanged": "Nothing changed"}.get(kind, "✅ Signup updated")
-        if self.target is not None:
-            heading = f"Signup of {target_name}: {'nothing changed' if kind == 'unchanged' else 'saved'}"
-        await interaction.response.send_message(embed=signup_embed(signup, heading), ephemeral=True)
+        status = {"signup": "Complete", "unchanged": "(nothing changed)"}.get(kind, "Updated")
+        embed = signup_embed(signup, status)
+        content = f"Saved for <@{target_id}>." if self.target is not None else None
+        await interaction.response.send_message(content, embed=embed, ephemeral=True)
         await events.signup_changed(interaction.client, interaction.guild.id, signup, kind, details, interaction.user.id)
 
     async def on_error(self, interaction: Interaction, error: Exception) -> None:
