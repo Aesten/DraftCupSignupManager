@@ -44,20 +44,6 @@ async def test_config_defaults_and_update(db):
     config = await db.update_config(GUILD, close_date=None)
     assert config.closes_at is None
 
-    await db.replace_admins(GUILD, role_ids={1, 2}, user_ids={3})
-    config = await db.get_config(GUILD)
-    assert config.admin_role_ids == {1, 2} and config.admin_user_ids == {3}
-    await db.replace_admins(GUILD, role_ids=set())
-    config = await db.get_config(GUILD)
-    assert config.admin_role_ids == set() and config.admin_user_ids == {3}
-    await db.replace_admins(GUILD, user_ids=set())
-
-    await db.set_admin_role(GUILD, 10, True)
-    await db.set_admin_user(GUILD, 20, True)
-    config = await db.get_config(GUILD)
-    assert config.admin_role_ids == {10} and config.admin_user_ids == {20}
-    await db.set_admin_role(GUILD, 10, False)
-    assert (await db.get_config(GUILD)).admin_role_ids == set()
 
 
 async def test_update_config_rejects_unknown_key(db):
@@ -65,15 +51,20 @@ async def test_update_config_rejects_unknown_key(db):
         await db.update_config(GUILD, not_a_setting=5)
 
 
-async def test_active_tournament_is_stable(db):
-    first = await db.active_tournament(GUILD)
+async def test_tournament_lifecycle(db):
+    assert await db.active_tournament(GUILD) is None  # nothing before /tournament new
+    first = await db.create_tournament(GUILD)
     assert first.state is State.DRAFT and first.revision == 0
     assert (await db.active_tournament(GUILD)).id == first.id
-    assert (await db.active_tournament(GUILD + 1)).id != first.id
+    assert await db.active_tournament(GUILD + 1) is None
+    second = await db.create_tournament(GUILD)
+    assert second.id != first.id
+    assert (await db.active_tournament(GUILD)).id == second.id
+    assert [t.id for t in await db.active_tournaments()] == [second.id]
 
 
 async def test_signup_create_edit_and_revision(db):
-    t = await db.active_tournament(GUILD)
+    t = await db.create_tournament(GUILD)
     signup, kind, _ = await db.save_signup(t.id, 100, "bob", Role.PLAYER, fields(), utcnow(), 100)
     assert kind == "signup"
     assert signup.captain_status is None
@@ -89,7 +80,7 @@ async def test_signup_create_edit_and_revision(db):
 
 
 async def test_nickname_unique_case_insensitive(db):
-    t = await db.active_tournament(GUILD)
+    t = await db.create_tournament(GUILD)
     await db.save_signup(t.id, 100, "bob", Role.PLAYER, fields("Big Bob"), utcnow(), 100)
     with pytest.raises(NicknameTaken):
         await db.save_signup(t.id, 200, "other", Role.CAPTAIN, fields("big bob"), utcnow(), 200)
@@ -99,7 +90,7 @@ async def test_nickname_unique_case_insensitive(db):
 
 
 async def test_withdraw_frees_nickname(db):
-    t = await db.active_tournament(GUILD)
+    t = await db.create_tournament(GUILD)
     signup, _, _ = await db.save_signup(t.id, 100, "bob", Role.PLAYER, fields(), utcnow(), 100)
     withdrawn = await db.withdraw_signup(signup.id, 100)
     assert withdrawn is not None and withdrawn.withdrawn_at is not None
@@ -114,7 +105,7 @@ async def test_withdraw_frees_nickname(db):
 
 
 async def test_role_switch_and_captain_reset(db, tmp_path):
-    t = await db.active_tournament(GUILD)
+    t = await db.create_tournament(GUILD)
     signup, _, _ = await db.save_signup(t.id, 100, "bob", Role.PLAYER, fields(), utcnow(), 100)
 
     signup, kind, details = await db.save_signup(t.id, 100, "bob", Role.CAPTAIN, fields(), utcnow(), 100)
@@ -142,13 +133,13 @@ async def test_role_switch_and_captain_reset(db, tmp_path):
 
 
 async def test_new_signup_requires_agreement(db):
-    t = await db.active_tournament(GUILD)
+    t = await db.create_tournament(GUILD)
     with pytest.raises(ValueError):
         await db.save_signup(t.id, 100, "bob", Role.PLAYER, fields(), None, 100)
 
 
 async def test_open_tournaments_due(db):
-    t = await db.active_tournament(GUILD)
+    t = await db.create_tournament(GUILD)
     config = await db.update_config(GUILD, close_date=utcnow().date() + timedelta(days=2))
     await db.set_state(t.id, State.OPEN)
     assert await db.open_tournaments_due(utcnow()) == []
@@ -157,7 +148,7 @@ async def test_open_tournaments_due(db):
 
 
 async def test_left_server_flag(db):
-    t = await db.active_tournament(GUILD)
+    t = await db.create_tournament(GUILD)
     await db.save_signup(t.id, 100, "bob", Role.PLAYER, fields(), utcnow(), 100)
     flagged = await db.set_left_server(t.id, 100, True)
     assert flagged is not None and flagged.left_server
@@ -171,7 +162,7 @@ async def _captain(db, tournament_id, user_id, nickname):
 
 
 async def test_captain_status_capacity_and_log(db):
-    t = await db.active_tournament(GUILD)
+    t = await db.create_tournament(GUILD)
     a = await _captain(db, t.id, 1, "CapA")
     b = await _captain(db, t.id, 2, "CapB")
     player, _, _ = await db.save_signup(t.id, 3, "p", Role.PLAYER, fields("Plain"), utcnow(), 3)
@@ -184,32 +175,39 @@ async def test_captain_status_capacity_and_log(db):
     _, details = await db.set_captain_status(a.id, CaptainStatus.PICKED, 1, 99, **limits)
     assert details == {}  # unchanged: no log entry
 
-    with pytest.raises(ActionRefused, match="already has 1"):
+    with pytest.raises(ActionRefused, match="already has its 1 captains"):
         await db.set_captain_status(b.id, CaptainStatus.PICKED, 1, 99, **limits)
     with pytest.raises(ActionRefused, match="valid division"):
         await db.set_captain_status(b.id, CaptainStatus.PICKED, 3, 99, **limits)
     with pytest.raises(ActionRefused, match="no longer a captain"):
-        await db.set_captain_status(player.id, CaptainStatus.POOL, None, 99, **limits)
+        await db.set_captain_status(player.id, CaptainStatus.PENDING, None, 99, **limits)
 
-    signup, _ = await db.set_captain_status(b.id, CaptainStatus.POOL, 2, 99, **limits)
-    assert signup.captain_status is CaptainStatus.POOL and signup.division_index is None
+    with pytest.raises(ValueError):
+        await db.set_captain_status(b.id, CaptainStatus.POOL, None, 99, **limits)
     assert await db.highest_used_division(t.id) == 1
 
+    # Rejecting makes the captain a player; adding makes a player an undecided captain candidate.
+    rejected, details = await db.set_role(b.id, Role.PLAYER, 99, "captain_rejected")
+    assert rejected.role is Role.PLAYER and rejected.captain_status is None and rejected.status_set_by == 99
+    assert details["from_role"] == "captain"
+    with pytest.raises(ActionRefused, match="already a player"):
+        await db.set_role(b.id, Role.PLAYER, 99, "captain_rejected")
+    revoked, details = await db.set_role(a.id, Role.PLAYER, 99, "captain_revoked")
+    assert revoked.division_index is None and details["from_division"] == 1
+    added, _ = await db.set_role(player.id, Role.CAPTAIN, 99, "captain_added")
+    assert added.role is Role.CAPTAIN and added.captain_status is CaptainStatus.PENDING
+
     kinds = [c.kind for c in await db.changes_since(t.id, 0)]
-    assert kinds == ["signup", "signup", "signup", "captain_status", "captain_status"]
+    assert kinds == ["signup", "signup", "signup", "captain_status", "captain_rejected", "captain_revoked", "captain_added"]
 
 
-async def test_divisions_and_rename(db):
-    t = await db.active_tournament(GUILD)
+async def test_division_names(db):
+    t = await db.create_tournament(GUILD)
     assert await db.division_names(t.id, 2) == ["Division 1", "Division 2"]
-    await db.rename_division(t.id, 2, "Div B", 99)
-    await db.rename_division(t.id, 2, "Division B", 99)
-    assert await db.division_names(t.id, 3) == ["Division 1", "Division B", "Division 3"]
-    assert (await db.active_tournament(GUILD)).revision == 2
 
 
 async def test_export_tracking(db):
-    t = await db.active_tournament(GUILD)
+    t = await db.create_tournament(GUILD)
     await db.save_signup(t.id, 1, "a", Role.PLAYER, fields("A"), utcnow(), 1)
     t = await db.active_tournament(GUILD)
     await db.record_export(t.id, ExportType.CSV, t.revision, 99)
@@ -228,15 +226,12 @@ async def test_export_tracking(db):
     assert (await db.latest_exports(t.id))[ExportType.CSV].stale_notified_at is None
 
 
-async def test_archive_starts_a_fresh_tournament(db):
-    t = await db.active_tournament(GUILD)
-    await db.rename_division(t.id, 1, "Premier", 99)
-    signup, _, _ = await db.save_signup(t.id, 1, "a", Role.PLAYER, fields("A"), utcnow(), 1)
-    new = await db.archive_tournament(t.id)
-    assert new.id != t.id and new.state is State.DRAFT and new.revision == 0
-    assert (await db.active_tournament(GUILD)).id == new.id
+async def test_new_tournament_starts_empty(db):
+    t = await db.create_tournament(GUILD)
+    await db.save_signup(t.id, 1, "a", Role.PLAYER, fields("A"), utcnow(), 1)
+    new = await db.create_tournament(GUILD)
+    assert new.state is State.DRAFT and new.revision == 0
     assert await db.list_active_signups(new.id) == []
-    assert await db.division_names(new.id, 1) == ["Premier"]
     # The same nickname is free again in the new tournament.
     _, kind, _ = await db.save_signup(new.id, 1, "a", Role.PLAYER, fields("A"), utcnow(), 1)
     assert kind == "signup"
@@ -245,8 +240,8 @@ async def test_archive_starts_a_fresh_tournament(db):
 async def test_servers_are_isolated(db):
     """A test server and the real server share the bot and the database, never their data."""
     main, test = 111, 222
-    t_main = await db.active_tournament(main)
-    t_test = await db.active_tournament(test)
+    t_main = await db.create_tournament(main)
+    t_test = await db.create_tournament(test)
     assert t_main.id != t_test.id
 
     await db.update_config(test, title="Test cup", division_count=1)
@@ -259,15 +254,12 @@ async def test_servers_are_isolated(db):
     assert (await db.get_active_signup(t_test.id, 5)).role is Role.CAPTAIN
     assert [s.nickname for s in await db.find_signups(t_main.id, "bo")] == ["Bob"]
 
-    await db.set_admin_role(test, 7, True)
-    assert (await db.get_config(main)).admin_role_ids == set()
-
-    await db.archive_tournament(t_test.id)
+    await db.create_tournament(test)
     assert (await db.active_tournament(main)).id == t_main.id
 
 
 async def test_find_signups(db):
-    t = await db.active_tournament(GUILD)
+    t = await db.create_tournament(GUILD)
     await db.save_signup(t.id, 1, "zed_discord", Role.PLAYER, fields("Alpha"), utcnow(), 1)
     await db.save_signup(t.id, 2, "other", Role.PLAYER, fields("Beta"), utcnow(), 2)
     assert [s.nickname for s in await db.find_signups(t.id, "ALP")] == ["Alpha"]
@@ -294,7 +286,7 @@ async def test_migrates_v1_database(tmp_path):
     try:
         config = await database.get_config(GUILD)
         assert config.tournament_date == date(2026, 10, 25) and config.close_date == date(2026, 10, 18)
-        t = await database.active_tournament(GUILD)
+        t = await database.create_tournament(GUILD)
         await database.record_export(t.id, ExportType.CSV, 0, 1)
         assert ExportType.CSV in await database.latest_exports(t.id)
     finally:

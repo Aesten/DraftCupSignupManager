@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime
 from enum import StrEnum
 
@@ -19,9 +19,9 @@ class Role(StrEnum):
 
 
 class CaptainStatus(StrEnum):
-    PENDING = "pending"
-    PICKED = "picked"
-    POOL = "pool"
+    PENDING = "pending"  # waiting for an organiser to accept or reject
+    PICKED = "picked"  # accepted into a division
+    POOL = "pool"  # legacy: rejected captains now become players instead
 
 
 class State(StrEnum):
@@ -47,22 +47,20 @@ class GuildConfig:
     captains_per_division: int = 8
     team_size: int = 6
     division_count: int = 2
-    half_budget_cap: bool = True
+    half_budget_cap: bool = True  # unused: set in the auction app
     timezone: str = "Europe/Paris"
-    tournament_date: date | None = None
-    auction_date: date | None = None
+    tournament_date: date | None = None  # unused: dates are announced in the server's own channels
+    auction_date: date | None = None  # unused
     # Signups close on close_date at close_time (server timezone); closes_at is that moment in UTC,
     # kept up to date by the database layer.
     close_date: date | None = None
     close_time: str = "23:59"
     closes_at: datetime | None = None
-    rules_url: str | None = None
+    rules_url: str | None = None  # unused: rules live in the server's own channels
     signup_channel_id: int | None = None
     admin_channel_id: int | None = None
     signup_message_id: int | None = None
     status_message_id: int | None = None
-    admin_role_ids: frozenset[int] = field(default_factory=frozenset)
-    admin_user_ids: frozenset[int] = field(default_factory=frozenset)
 
 
 @dataclass

@@ -223,14 +223,7 @@ class Database:
             values[column] = value
         values["format"] = Format(values["format"])
         values["half_budget_cap"] = bool(values["half_budget_cap"])
-        roles = await self._fetchall("SELECT role_id FROM admin_role WHERE guild_id = ?", (guild_id,))
-        users = await self._fetchall("SELECT user_id FROM admin_user WHERE guild_id = ?", (guild_id,))
-        return GuildConfig(
-            guild_id=guild_id,
-            admin_role_ids=frozenset(r["role_id"] for r in roles),
-            admin_user_ids=frozenset(r["user_id"] for r in users),
-            **values,
-        )
+        return GuildConfig(guild_id=guild_id, **values)
 
     async def update_config(self, guild_id: int, **changes: Any) -> GuildConfig:
         unknown = set(changes) - set(_CONFIG_COLUMNS) | ({"closes_at"} & set(changes))
@@ -260,39 +253,6 @@ class Database:
                 await self._conn.commit()
         return await self.get_config(guild_id)
 
-    async def set_admin_role(self, guild_id: int, role_id: int, enabled: bool) -> None:
-        if enabled:
-            sql = "INSERT OR IGNORE INTO admin_role (guild_id, role_id) VALUES (?, ?)"
-        else:
-            sql = "DELETE FROM admin_role WHERE guild_id = ? AND role_id = ?"
-        async with self._lock:
-            await self._conn.execute(sql, (guild_id, role_id))
-            await self._conn.commit()
-
-    async def set_admin_user(self, guild_id: int, user_id: int, enabled: bool) -> None:
-        if enabled:
-            sql = "INSERT OR IGNORE INTO admin_user (guild_id, user_id) VALUES (?, ?)"
-        else:
-            sql = "DELETE FROM admin_user WHERE guild_id = ? AND user_id = ?"
-        async with self._lock:
-            await self._conn.execute(sql, (guild_id, user_id))
-            await self._conn.commit()
-
-    async def replace_admins(self, guild_id: int, *, role_ids: set[int] | None = None, user_ids: set[int] | None = None) -> None:
-        """Replaces the organiser roles and/or users with exactly these (None leaves that list as is)."""
-        async with self._lock:
-            if role_ids is not None:
-                await self._conn.execute("DELETE FROM admin_role WHERE guild_id = ?", (guild_id,))
-                await self._conn.executemany(
-                    "INSERT INTO admin_role (guild_id, role_id) VALUES (?, ?)", [(guild_id, r) for r in role_ids]
-                )
-            if user_ids is not None:
-                await self._conn.execute("DELETE FROM admin_user WHERE guild_id = ?", (guild_id,))
-                await self._conn.executemany(
-                    "INSERT INTO admin_user (guild_id, user_id) VALUES (?, ?)", [(guild_id, u) for u in user_ids]
-                )
-            await self._conn.commit()
-
     # ------------------------------------------------------------- tournament
 
     @staticmethod
@@ -305,27 +265,23 @@ class Database:
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 
-    async def active_tournament(self, guild_id: int) -> Tournament:
-        """Returns the server's current tournament, creating an empty one if needed."""
-        async with self._lock:
-            row = await self._fetchone(
-                "SELECT * FROM tournament WHERE guild_id = ? AND archived_at IS NULL", (guild_id,)
-            )
-            if row is None:
-                await self._conn.execute(
-                    "INSERT INTO tournament (guild_id, created_at) VALUES (?, ?)", (guild_id, _dt_to_db(utcnow()))
-                )
-                await self._conn.commit()
-                row = await self._fetchone(
-                    "SELECT * FROM tournament WHERE guild_id = ? AND archived_at IS NULL", (guild_id,)
-                )
-            assert row is not None
-            return self._tournament(row)
-
-    async def find_active_tournament(self, guild_id: int) -> Tournament | None:
-        """Like active_tournament, but never creates one (for events from servers that may not use the bot)."""
+    async def active_tournament(self, guild_id: int) -> Tournament | None:
+        """The server's current tournament, or None before the first `/tournament new`."""
         row = await self._fetchone("SELECT * FROM tournament WHERE guild_id = ? AND archived_at IS NULL", (guild_id,))
         return self._tournament(row) if row else None
+
+    async def create_tournament(self, guild_id: int) -> Tournament:
+        """Archives the current tournament, if any, and starts an empty one in the preparing state."""
+        async with self._lock:
+            now = _dt_to_db(utcnow())
+            await self._conn.execute(
+                "UPDATE tournament SET archived_at = ? WHERE guild_id = ? AND archived_at IS NULL", (now, guild_id)
+            )
+            cur = await self._conn.execute("INSERT INTO tournament (guild_id, created_at) VALUES (?, ?)", (guild_id, now))
+            await self._conn.commit()
+            row = await self._fetchone("SELECT * FROM tournament WHERE id = ?", (cur.lastrowid,))
+            assert row is not None
+            return self._tournament(row)
 
     async def set_state(self, tournament_id: int, state: State) -> None:
         async with self._lock:
@@ -567,6 +523,8 @@ class Database:
 
         Returns the signup and the change-log details; details are empty when nothing changed.
         """
+        if status is CaptainStatus.POOL:
+            raise ValueError("Rejected captains become players: use set_role.")
         if status is CaptainStatus.PICKED:
             if division_index is None or not 1 <= division_index <= division_count:
                 raise ActionRefused("Pick a valid division.")
@@ -591,7 +549,7 @@ class Database:
                 )
                 assert row is not None
                 if row["n"] >= capacity:
-                    raise ActionRefused(f"That division already has {capacity} captains.")
+                    raise ActionRefused(f"Division {division_index} already has its {capacity} captains.")
             await self._conn.execute(
                 "UPDATE signup SET captain_status = ?, division_index = ?, status_set_by = ? WHERE id = ?",
                 (status.value, division_index, actor_id, signup_id),
@@ -604,6 +562,36 @@ class Database:
                 "to_division": division_index,
             }
             await self._record_change(signup.tournament_id, actor_id, signup_id, "captain_status", details)
+            await self._conn.commit()
+            updated = await self.get_signup(signup_id)
+            assert updated is not None
+            return updated, details
+
+    async def set_role(self, signup_id: int, role: Role, actor_id: int, kind: str) -> tuple[Signup, dict[str, Any]]:
+        """Organiser decision that changes a signup's role, keeping its data. Raises ActionRefused.
+
+        kind: "captain_rejected" or "captain_revoked" (captain → player), "captain_added" (player → captain).
+        A new captain candidate starts undecided (pending).
+        """
+        async with self._lock:
+            signup = await self.get_signup(signup_id)
+            if signup is None or signup.withdrawn_at is not None:
+                raise ActionRefused("This signup was withdrawn.")
+            if signup.role is role:
+                raise ActionRefused(f"**{signup.nickname}** is already a {role.value}.")
+            status = CaptainStatus.PENDING.value if role is Role.CAPTAIN else None
+            await self._conn.execute(
+                "UPDATE signup SET role = ?, captain_status = ?, division_index = NULL, status_set_by = ?,"
+                " updated_at = ? WHERE id = ?",
+                (role.value, status, actor_id, _dt_to_db(utcnow()), signup_id),
+            )
+            details = {
+                "nickname": signup.nickname,
+                "role": role.value,
+                "from_role": signup.role.value,
+                "from_division": signup.division_index,
+            }
+            await self._record_change(signup.tournament_id, actor_id, signup_id, kind, details)
             await self._conn.commit()
             updated = await self.get_signup(signup_id)
             assert updated is not None
@@ -625,16 +613,6 @@ class Database:
         names = {row["idx"]: row["name"] for row in rows}
         return [names.get(i, f"Division {i}") for i in range(1, count + 1)]
 
-    async def rename_division(self, tournament_id: int, index: int, name: str, actor_id: int) -> None:
-        async with self._lock:
-            await self._conn.execute(
-                "INSERT INTO division (tournament_id, idx, name) VALUES (?, ?, ?)"
-                " ON CONFLICT (tournament_id, idx) DO UPDATE SET name = excluded.name",
-                (tournament_id, index, name),
-            )
-            await self._record_change(tournament_id, actor_id, None, "division_rename", {"index": index, "name": name})
-            await self._conn.commit()
-
     # ------------------------------------------------------ config & lifecycle
 
     async def record_config_change(self, tournament_id: int, actor_id: int, key: str, value: str) -> None:
@@ -642,25 +620,6 @@ class Database:
         async with self._lock:
             await self._record_change(tournament_id, actor_id, None, "config", {"key": key, "value": value})
             await self._conn.commit()
-
-    async def archive_tournament(self, tournament_id: int) -> Tournament:
-        """Archives the tournament and returns the new, empty one (division names are carried over)."""
-        async with self._lock:
-            row = await self._fetchone("SELECT guild_id FROM tournament WHERE id = ?", (tournament_id,))
-            assert row is not None
-            now = _dt_to_db(utcnow())
-            await self._conn.execute("UPDATE tournament SET archived_at = ? WHERE id = ?", (now, tournament_id))
-            cur = await self._conn.execute(
-                "INSERT INTO tournament (guild_id, created_at) VALUES (?, ?)", (row["guild_id"], now)
-            )
-            await self._conn.execute(
-                "INSERT INTO division (tournament_id, idx, name) SELECT ?, idx, name FROM division WHERE tournament_id = ?",
-                (cur.lastrowid, tournament_id),
-            )
-            await self._conn.commit()
-            new = await self._fetchone("SELECT * FROM tournament WHERE id = ?", (cur.lastrowid,))
-            assert new is not None
-            return self._tournament(new)
 
     # ---------------------------------------------------------------- exports
 

@@ -87,3 +87,27 @@ async def test_feed_reports_unreachable_admin_channel_once(monkeypatch, caplog):
 @pytest.mark.parametrize("perm", list(health.ADMIN_CHANNEL_PERMISSIONS))
 def test_permission_names_exist(perm):
     assert hasattr(discord.Permissions.none(), perm)
+
+
+def test_organisers_are_members_who_see_the_admin_channel():
+    from draftcup.permissions import is_admin
+
+    class Member(discord.Member):  # isinstance checks only; nothing else of discord.Member is used
+        def __init__(self, manage: bool, sees_admin: bool) -> None:
+            self._manage, self._sees = manage, sees_admin
+
+        @property
+        def guild_permissions(self):
+            return discord.Permissions(manage_guild=self._manage)
+
+        @property
+        def guild(self):
+            sees = self._sees
+            channel = SimpleNamespace(permissions_for=lambda m: discord.Permissions(view_channel=sees))
+            return SimpleNamespace(get_channel=lambda channel_id: channel)
+
+    config = GuildConfig(guild_id=1, admin_channel_id=5)
+    assert is_admin(Member(manage=False, sees_admin=True), config)
+    assert not is_admin(Member(manage=False, sees_admin=False), config)
+    assert is_admin(Member(manage=True, sees_admin=False), config)  # Manage Server can always run /setup
+    assert not is_admin(Member(manage=False, sees_admin=True), GuildConfig(guild_id=1))  # no admin channel yet

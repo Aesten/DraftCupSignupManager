@@ -1,9 +1,9 @@
-"""Dates and times: day-only dates, the closing moment, Discord timestamps."""
+"""Dates and times: the signup close day, the closing moment, Discord timestamps."""
 
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # Draft Cup signups usually close at 23:59 CET/CEST.
@@ -42,18 +42,26 @@ def local_today(tz_name: str, now: datetime | None = None) -> date:
 
 
 def format_day(day: date | None) -> str:
-    """Day-only dates are shown as plain text: a Discord timestamp would shift them across timezones."""
     return day.strftime("%A %d %B %Y") if day else "*not set*"
 
 
-def short_day(day: date) -> str:
-    return day.strftime("%a %d %b")
+def input_day(day: date | None) -> str:
+    """A day as typed in forms: DD/MM/YYYY."""
+    return day.strftime("%d/%m/%Y") if day else ""
 
 
-def week_starts(today: date, count: int = 25) -> list[date]:
-    """Mondays of the current week and the following ones (25 is Discord's select menu limit)."""
-    monday = today - timedelta(days=today.weekday())
-    return [monday + timedelta(weeks=i) for i in range(count)]
+_DAY_RE = re.compile(r"^\s*(\d{1,2})\s*[/.-]\s*(\d{1,2})\s*[/.-]\s*(\d{4})\s*$")
+
+
+def parse_day(text: str) -> date:
+    """Parses DD/MM/YYYY (also with `.` or `-`, and single-digit day or month)."""
+    match = _DAY_RE.match(text)
+    if match:
+        try:
+            return date(int(match[3]), int(match[2]), int(match[1]))
+        except ValueError:
+            pass
+    raise ValueError(f"`{text.strip()}` isn't a date: write it as DD/MM/YYYY, e.g. `17/10/2026`.")
 
 
 def discord_ts(value: datetime | None, style: str = "F") -> str:

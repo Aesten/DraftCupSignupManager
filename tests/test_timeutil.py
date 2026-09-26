@@ -22,10 +22,23 @@ def test_closing_moment_follows_daylight_saving():
     assert timeutil.closing_moment(date(2026, 11, 8), "23:59", "Europe/Paris") == datetime(2026, 11, 8, 22, 59, tzinfo=timezone.utc)
 
 
-def test_week_starts():
-    weeks = timeutil.week_starts(date(2026, 10, 1))  # a Thursday
-    assert weeks[0] == date(2026, 9, 28) and len(weeks) == 25
-    assert all(w.weekday() == 0 for w in weeks)
+@pytest.mark.parametrize(
+    "raw, expected",
+    [("17/10/2026", date(2026, 10, 17)), ("1/2/2027", date(2027, 2, 1)), (" 05.11.2026 ", date(2026, 11, 5)), ("5-11-2026", date(2026, 11, 5))],
+)
+def test_parse_day(raw, expected):
+    assert timeutil.parse_day(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["", "17/10", "31/02/2026", "2026-10-17", "17/10/26", "tomorrow"])
+def test_parse_day_rejects(raw):
+    with pytest.raises(ValueError, match="DD/MM/YYYY"):
+        timeutil.parse_day(raw)
+
+
+def test_input_day():
+    assert timeutil.input_day(date(2026, 10, 5)) == "05/10/2026"
+    assert timeutil.input_day(None) == ""
 
 
 def test_local_today_uses_the_server_timezone():

@@ -102,7 +102,7 @@ def _json_bytes(data: dict[str, Any]) -> bytes:
 
 def _pending_warning(pending: list[Signup]) -> str:
     names = ", ".join(s.nickname for s in pending)
-    return f"{len(pending)} captain candidate(s) still pending and left out: {names}."
+    return f"{len(pending)} captain signup(s) not accepted or rejected yet, left out of the list: {names}."
 
 
 def build_player_list(config: GuildConfig, signups: list[Signup]) -> ExportResult:
@@ -122,9 +122,9 @@ def build_tournament(config: GuildConfig, signups: list[Signup], division_names:
     pending = pending_captains(signups)
     if pending:
         result.errors.append(
-            f"{len(pending)} captain candidate(s) are still pending: "
+            f"{len(pending)} captain signup(s) haven't been accepted or rejected yet: "
             + ", ".join(s.nickname for s in pending)
-            + ". Pick them into a division or move them to the pool."
+            + ". Decide on their cards (`/captain list-pending` reposts them)."
         )
 
     by_division: dict[int, list[Signup]] = {i: [] for i in range(1, len(division_names) + 1)}
@@ -151,11 +151,10 @@ def build_tournament(config: GuildConfig, signups: list[Signup], division_names:
         divisions.append({
             "name": name,
             "teamSize": config.team_size,
-            "halfBudgetCapAtStart": config.half_budget_cap,
             "captains": [{"name": s.nickname, "class": s.player_class, "budget": s.budget} for s in captains],
         })
     if not divisions:
-        result.errors.append("No division has captains yet.")
+        result.errors.append("No captain has been accepted into a division yet.")
 
     needed = picked_total * config.team_size
     if divisions and len(players) < needed:

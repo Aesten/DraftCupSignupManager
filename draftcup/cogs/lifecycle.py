@@ -83,7 +83,7 @@ class LifecycleCog(commands.Cog):
         await self._member_presence(member.guild.id, member.id, left=False)
 
     async def _member_presence(self, guild_id: int, user_id: int, *, left: bool) -> None:
-        tournament = await self.bot.db.find_active_tournament(guild_id)
+        tournament = await self.bot.db.active_tournament(guild_id)
         if tournament is None:
             return
         signup = await self.bot.db.set_left_server(tournament.id, user_id, left)

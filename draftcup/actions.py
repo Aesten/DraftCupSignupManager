@@ -1,19 +1,19 @@
-"""Tournament-level actions shared by dashboard buttons, slash commands and the scheduler."""
+"""Tournament-level actions shared by the tournament message's buttons, slash commands and the scheduler."""
 
 from __future__ import annotations
 
 import io
 import logging
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
 import discord
 
-from . import events, exports
+from . import exports
 from .db import utcnow
 from .health import channel_problems
-from .models import ExportType, GuildConfig, State
-from .timeutil import closing_moment, discord_ts, format_day
-from .views import captain_card, signup_post
+from .models import ExportType, GuildConfig, State, Tournament
+from .timeutil import closing_moment, discord_ts, format_day, local_today
 
 if TYPE_CHECKING:
     from .bot import DraftCupBot
@@ -21,140 +21,124 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 # Settings that change the content of exported files: changing them makes exports stale (spec §9.4).
-EXPORT_KEYS = {"title", "format", "team_size", "half_budget_cap", "division_count"}
+EXPORT_KEYS = {"title", "team_size", "division_count"}
+NO_TOURNAMENT = "There's no tournament yet. Start one with `/tournament new`."
 
 
 class ActionError(Exception):
     """An action that can't run now; the message is shown to the organiser."""
 
 
-def missing_for_opening(config: GuildConfig) -> list[str]:
-    missing = []
-    if config.signup_channel_id is None or config.admin_channel_id is None:
-        missing.append("the channels (`/setup`)")
-    if config.close_date is None:
-        missing.append("the signup close date")
-    elif config.closes_at is not None and config.closes_at <= utcnow():
-        missing.append("a signup close date in the future")
-    if config.auction_date is None:
-        missing.append("the auction date")
-    if config.tournament_date is None:
-        missing.append("the tournament date")
-    return missing
+async def require_tournament(bot: DraftCupBot, guild_id: int) -> Tournament:
+    tournament = await bot.db.active_tournament(guild_id)
+    if tournament is None:
+        raise ActionError(NO_TOURNAMENT)
+    return tournament
 
 
 def close_text(config: GuildConfig) -> str:
-    return f"{format_day(config.close_date)} at {config.close_time} ({config.timezone}), {discord_ts(config.closes_at, 'R')}"
+    if config.closes_at is None:
+        return "*not set*"
+    return f"{discord_ts(config.closes_at, 'f')} ({discord_ts(config.closes_at, 'R')})"
 
 
-# ------------------------------------------------------------------- settings
+def check_close_day(config: GuildConfig, day: date) -> None:
+    """The close moment (day at the close time, Paris time) must be in the future."""
+    if day < local_today(config.timezone) or closing_moment(day, config.close_time, config.timezone) <= utcnow():
+        raise ActionError(f"{format_day(day)} at {config.close_time} is already past. Pick a later day.")
 
 
-async def update_settings(bot: DraftCupBot, guild_id: int, actor_id: int, changes: dict[str, Any], labels: dict[str, str]) -> list[str]:
-    """Saves changed settings and runs what follows. `labels` gives a readable value per key.
+# --------------------------------------------------------------------- settings
 
-    Returns the readable list of what changed (empty when nothing did).
-    """
+
+async def update_settings(bot: DraftCupBot, guild_id: int, actor_id: int, changes: dict[str, Any]) -> list[str]:
+    """Saves changed tournament settings and runs what follows. Returns what changed, readable."""
+    tournament = await require_tournament(bot, guild_id)
     config = await bot.db.get_config(guild_id)
     changes = {key: value for key, value in changes.items() if getattr(config, key) != value}
     if not changes:
         return []
-    tournament = await bot.db.active_tournament(guild_id)
     if "division_count" in changes:
         used = await bot.db.highest_used_division(tournament.id)
         if changes["division_count"] < used:
-            raise ActionError(f"Captains are picked in division {used}: move them before removing that division.")
-    if (
-        tournament.state is State.OPEN
-        and changes.keys() & {"close_date", "close_time", "timezone"}
-        and changes.get("close_date", config.close_date) is not None
-    ):
-        preview = closing_moment(
-            changes.get("close_date", config.close_date),
-            changes.get("close_time", config.close_time),
-            changes.get("timezone", config.timezone),
-        )
-        if preview <= utcnow():
-            raise ActionError("Signups are open: the new close time would already be past. Close signups instead.")
-
+            raise ActionError(f"Captains are accepted into division {used}: move them (`/captain edit`) before removing it.")
     await bot.db.update_config(guild_id, **changes)
-    described = [f"{key.replace('_', ' ')} → {labels.get(key, str(value))}" for key, value in changes.items()]
+    described = [f"{key.replace('_', ' ')} → {value}" for key, value in changes.items()]
     for key in changes.keys() & EXPORT_KEYS:
-        await bot.db.record_config_change(tournament.id, actor_id, key, labels.get(key, str(changes[key])))
+        await bot.db.record_config_change(tournament.id, actor_id, key, str(changes[key]))
     await bot.feed.line(guild_id, f"⚙️ <@{actor_id}> changed " + "; ".join(described))
-    await events.tournament_changed(bot, guild_id)
+    bot.refresher.request(guild_id)
     if "division_count" in changes:
+        from .views import captain_card
+
         await captain_card.refresh_all_cards(bot, guild_id)
     return described
 
 
-async def rename_divisions(bot: DraftCupBot, guild_id: int, actor_id: int, names: list[str]) -> list[str]:
+async def set_close_day(bot: DraftCupBot, guild_id: int, actor_id: int, day: date) -> GuildConfig:
+    await require_tournament(bot, guild_id)
     config = await bot.db.get_config(guild_id)
-    tournament = await bot.db.active_tournament(guild_id)
-    current = await bot.db.division_names(tournament.id, config.division_count)
-    if len({n.lower() for n in names}) != len(names):
-        raise ActionError("Two divisions can't have the same name.")
-    changed = []
-    for index, (old, new) in enumerate(zip(current, names), start=1):
-        if old != new:
-            await bot.db.rename_division(tournament.id, index, new, actor_id)
-            changed.append(f"{old} → {new}")
-    if changed:
-        await bot.feed.line(guild_id, f"⚙️ <@{actor_id}> renamed divisions: " + "; ".join(changed))
+    check_close_day(config, day)
+    if config.close_date != day:
+        config = await bot.db.update_config(guild_id, close_date=day)
+        await bot.feed.line(guild_id, f"📅 <@{actor_id}> set the signup close to {close_text(config)}.")
         bot.refresher.request(guild_id)
-        await captain_card.refresh_all_cards(bot, guild_id)
-    return changed
+    return config
 
 
 # ------------------------------------------------------------------ lifecycle
 
 
-async def open_signups(bot: DraftCupBot, guild_id: int, actor_id: int) -> discord.Message | None:
-    """Opens (or reopens) signups and publishes the public post. Raises ActionError."""
-    config = await bot.db.get_config(guild_id)
-    tournament = await bot.db.active_tournament(guild_id)
+async def create_tournament(bot: DraftCupBot, guild_id: int, actor_id: int, title: str) -> Tournament:
+    """Archives the current tournament (if closed or never opened) and starts a new one."""
+    current = await bot.db.active_tournament(guild_id)
+    if current is not None and current.state is State.OPEN:
+        raise ActionError("Signups of the current tournament are open: close them first.")
+    tournament = await bot.db.create_tournament(guild_id)
+    await bot.db.update_config(guild_id, title=title, close_date=None, signup_message_id=None, status_message_id=None)
+    archived = " The previous tournament was archived; its captain cards no longer work." if current else ""
+    await bot.feed.line(guild_id, f"🆕 <@{actor_id}> started the tournament **{title}**.{archived}")
+    return tournament
+
+
+async def open_signups(bot: DraftCupBot, guild_id: int, actor_id: int, day: date) -> discord.Message:
+    """Opens (or reopens) signups until `day` at the close time and publishes the public post."""
+    from .views import signup_post
+
+    tournament = await require_tournament(bot, guild_id)
     if tournament.state is State.OPEN:
         raise ActionError("Signups are already open.")
-    missing = missing_for_opening(config)
-    if missing:
-        raise ActionError("Set these first: " + ", ".join(missing) + ".")
+    config = await bot.db.get_config(guild_id)
+    check_close_day(config, day)
+    if config.signup_channel_id is None:
+        raise ActionError("No signup channel: run `/setup` first.")
     problems = channel_problems(bot, config)
     if problems:
         raise ActionError("I can't use the channels yet:\n" + "\n".join(f"- {p}" for p in problems))
+
+    previous_day = config.close_date
+    config = await bot.db.update_config(guild_id, close_date=day)
     await bot.db.set_state(tournament.id, State.OPEN)
     try:
         message = await signup_post.publish(bot, guild_id)
     except (discord.HTTPException, RuntimeError) as exc:
         await bot.db.set_state(tournament.id, tournament.state)
+        await bot.db.update_config(guild_id, close_date=previous_day)
         raise ActionError(f"Couldn't post in the signup channel ({exc}). Check my permissions there.") from exc
     verb = "reopened" if tournament.state is State.CLOSED else "opened"
-    await bot.feed.line(
-        guild_id,
-        f"🟢 Signups {verb} by <@{actor_id}> ({config.format.label}), closing {close_text(config)}. {message.jump_url}",
-    )
+    await bot.feed.line(guild_id, f"🟢 Signups {verb} by <@{actor_id}> until {close_text(config)}. {message.jump_url}")
     bot.refresher.request(guild_id)
     return message
 
 
 async def close_signups(bot: DraftCupBot, guild_id: int, actor_id: int | None) -> None:
     """Closes signups now; `actor_id` is None for the scheduled close."""
-    tournament = await bot.db.active_tournament(guild_id)
+    tournament = await require_tournament(bot, guild_id)
     if tournament.state is not State.OPEN:
         raise ActionError("Signups aren't open.")
     await bot.db.set_state(tournament.id, State.CLOSED)
-    who = f"by <@{actor_id}>" if actor_id else "(scheduled close time reached)"
+    who = f"by <@{actor_id}>" if actor_id else "(close time reached)"
     await bot.feed.line(guild_id, f"🔒 Signups closed {who}.")
-    await events.tournament_changed(bot, guild_id)
-
-
-async def reset_tournament(bot: DraftCupBot, guild_id: int, actor_id: int) -> None:
-    """Archives the tournament: the next opening starts from an empty signup list and a new public post."""
-    tournament = await bot.db.active_tournament(guild_id)
-    if tournament.state is State.OPEN:
-        raise ActionError("Close signups first.")
-    await bot.db.archive_tournament(tournament.id)
-    await bot.db.update_config(guild_id, close_date=None, signup_message_id=None)
-    await bot.feed.line(guild_id, f"🗃️ <@{actor_id}> archived the tournament. Earlier captain cards no longer work.")
     bot.refresher.request(guild_id)
 
 
@@ -165,12 +149,12 @@ async def export(interaction: discord.Interaction[DraftCupBot], export_type: Exp
     """Builds an export and posts it in the admin channel; answers the interaction ephemerally."""
     assert interaction.guild is not None
     bot, guild_id = interaction.client, interaction.guild.id
-    config = await bot.db.get_config(guild_id)
-    if config.admin_channel_id is None:
-        await interaction.response.send_message("❌ Run `/setup` first: exports are posted in the admin channel.", ephemeral=True)
-        return
-    await interaction.response.defer(ephemeral=True, thinking=True)
     tournament = await bot.db.active_tournament(guild_id)
+    if tournament is None:
+        await interaction.response.send_message(NO_TOURNAMENT, ephemeral=True)
+        return
+    config = await bot.db.get_config(guild_id)
+    await interaction.response.defer(ephemeral=True, thinking=True)
     signups = await bot.db.list_active_signups(tournament.id)
     names = await bot.db.division_names(tournament.id, config.division_count)
     if export_type is ExportType.CSV:
@@ -181,9 +165,9 @@ async def export(interaction: discord.Interaction[DraftCupBot], export_type: Exp
         result = exports.build_tournament(config, signups, names)
 
     if result.errors:
-        text = "❌ Can't export yet:\n" + "\n".join(f"- {e}" for e in result.errors)
+        text = "❌ The tournament file can't be exported yet:\n" + "\n".join(f"- {e}" for e in result.errors)
         if result.warnings:
-            text += "\n\nAlso:\n" + "\n".join(f"- {w}" for w in result.warnings)
+            text += "\n\nAlso worth checking:\n" + "\n".join(f"- {w}" for w in result.warnings)
         await interaction.followup.send(text, ephemeral=True)
         return
 
@@ -197,9 +181,7 @@ async def export(interaction: discord.Interaction[DraftCupBot], export_type: Exp
     if message is None:
         reason = bot.feed.unreachable.get(guild_id, "see the bot logs")
         problems = "".join(f"\n- {p}" for p in channel_problems(bot, config))
-        await interaction.followup.send(
-            f"❌ Couldn't post the export in the admin channel: {reason}.{problems}", ephemeral=True
-        )
+        await interaction.followup.send(f"❌ Couldn't post the export in the admin channel: {reason}.{problems}", ephemeral=True)
         return
     await bot.db.record_export(tournament.id, export_type, tournament.revision, interaction.user.id)
     await interaction.followup.send(f"✅ Posted: {message.jump_url}{warnings}", ephemeral=True)

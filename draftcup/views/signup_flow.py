@@ -10,8 +10,7 @@ import discord
 
 from .. import rules
 from ..db import NicknameTaken, utcnow
-from ..models import GuildConfig, Role, Signup
-from ..timeutil import discord_ts
+from ..models import Role, Signup
 
 if TYPE_CHECKING:
     from ..bot import DraftCupBot
@@ -32,18 +31,20 @@ async def _is_open(interaction: Interaction) -> bool:
     db = interaction.client.db
     config = await db.get_config(interaction.guild.id)
     tournament = await db.active_tournament(interaction.guild.id)
-    return signups_open(tournament, config)
+    return tournament is not None and signups_open(tournament, config)
 
 
-def agreement_text(role: Role, config: GuildConfig) -> str:
-    rules_part = f"the [rules]({config.rules_url})" if config.rules_url else "the rules"
+def agreement_text(role: Role) -> str:
+    """Rules and dates are announced in the server's own channels; users confirm they read them."""
     if role is Role.CAPTAIN:
         return (
-            f"I agree to {rules_part} and can attend both the **auction** on {discord_ts(config.auction_date)} "
-            f"and the **tournament** on {discord_ts(config.tournament_date)}. "
-            "If I'm not picked as captain, I'll play as a player."
+            "I have read the tournament rules and announcements, and I can attend both the **auction** and the "
+            "**tournament** on the announced dates. If I'm not accepted as captain, I'll play as a player."
         )
-    return f"I agree to {rules_part} and can attend the **tournament** on {discord_ts(config.tournament_date)}."
+    return (
+        "I have read the tournament rules and announcements, and I can attend the **tournament** on the "
+        "announced date."
+    )
 
 
 def signup_embed(signup: Signup, heading: str) -> discord.Embed:
@@ -71,6 +72,7 @@ async def start_signup(interaction: Interaction, role: Role) -> None:
         return
     db = interaction.client.db
     tournament = await db.active_tournament(interaction.guild.id)
+    assert tournament is not None  # signups are open
     existing = await db.get_active_signup(tournament.id, interaction.user.id)
 
     if existing is not None and existing.role is role:
@@ -88,7 +90,7 @@ async def show_my_signup(interaction: Interaction) -> None:
         return
     db = interaction.client.db
     tournament = await db.active_tournament(interaction.guild.id)
-    signup = await db.get_active_signup(tournament.id, interaction.user.id)
+    signup = await db.get_active_signup(tournament.id, interaction.user.id) if tournament else None
     if signup is None:
         await interaction.response.send_message("You're not signed up.", ephemeral=True)
         return
@@ -115,15 +117,13 @@ async def send_agreement(
     *,
     edit_message: bool = False,
 ) -> None:
-    assert interaction.guild is not None
-    config = await interaction.client.db.get_config(interaction.guild.id)
     lines = [f"## {role.label} signup"]
     if switching_from is not None:
         lines.append(
             f"You're currently signed up as a **{switching_from.label.lower()}**. "
             f"Continuing switches your signup to **{role.label.lower()}**."
         )
-    lines.append(f"> {agreement_text(role, config)}")
+    lines.append(f"> {agreement_text(role)}")
     content = "\n".join(lines)
     view = AgreementView(role, prefill)
     if edit_message:
@@ -228,8 +228,11 @@ class SignupModal(discord.ui.Modal):
         target_id, target_name = self.target or (interaction.user.id, interaction.user.name)
         db = interaction.client.db
         fields, errors = rules.validate_form(form)
+        tournament = await db.active_tournament(interaction.guild.id)
+        if tournament is None:
+            await interaction.response.send_message("There's no tournament running.", ephemeral=True)
+            return
         if fields is not None:
-            tournament = await db.active_tournament(interaction.guild.id)
             try:
                 signup, kind, details = await db.save_signup(
                     tournament.id, target_id, target_name, self.role, fields, self.agreed_at, interaction.user.id

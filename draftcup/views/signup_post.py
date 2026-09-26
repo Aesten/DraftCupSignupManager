@@ -1,7 +1,7 @@
 """The public signup post and its persistent buttons (spec §5.1).
 
 It only exists once signups have opened: posted on the first opening, then edited in place for live
-counts, closing and reopening. A new tournament gets a new post.
+counts, closing and reopening. Each tournament gets its own post.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import discord
 
 from ..db import utcnow
 from ..models import GuildConfig, Role, Signup, State, Tournament
-from ..timeutil import discord_ts, format_day
+from ..timeutil import discord_ts
 from . import signup_flow
 
 if TYPE_CHECKING:
@@ -35,13 +35,14 @@ def signups_open(tournament: Tournament, config: GuildConfig, now: datetime | No
 
 
 def build_embed(config: GuildConfig, tournament: Tournament, signups: list[Signup]) -> discord.Embed:
+    """Title, close moment, live counts. Rules and dates are in the server's own channels."""
     players = sum(1 for s in signups if s.role is Role.PLAYER)
     captains = sum(1 for s in signups if s.role is Role.CAPTAIN)
     counts = f"**{players}** player{'s' if players != 1 else ''} · **{captains}** captain candidate{'s' if captains != 1 else ''}"
     if signups_open(tournament, config):
         status = (
-            f"🟢 **Signups are open** until {format_day(config.close_date)} at {config.close_time} "
-            f"({discord_ts(config.closes_at, 'R')}).\n{counts} signed up so far."
+            f"🟢 **Signups are open** until {discord_ts(config.closes_at, 'f')} ({discord_ts(config.closes_at, 'R')}).\n"
+            f"{counts} signed up so far."
         )
         colour = discord.Colour.green()
     else:
@@ -49,16 +50,11 @@ def build_embed(config: GuildConfig, tournament: Tournament, signups: list[Signu
         colour = discord.Colour.red()
 
     embed = discord.Embed(title=config.title, description=status, colour=colour)
-    embed.add_field(name="Format", value=config.format.label, inline=True)
-    embed.add_field(name="Auction (captains)", value=format_day(config.auction_date), inline=True)
-    embed.add_field(name="Tournament", value=format_day(config.tournament_date), inline=True)
-    if config.rules_url:
-        embed.add_field(name="Rules", value=config.rules_url, inline=False)
     embed.add_field(
         name="How to sign up",
         value=(
-            "Pick **Player** or **Captain**, accept the rules, then fill in the form.\n"
-            "Captains who aren't picked play as players.\n"
+            "Read the rules and announcements first. Then pick **Player** or **Captain**, confirm, and fill in the form.\n"
+            "Captain signups are reviewed by the organisers; if you're not accepted, you play as a player.\n"
             "Use **My signup** to check, edit or withdraw your signup while signups are open."
         ),
         inline=False,
@@ -101,6 +97,8 @@ async def _signup_channel(bot: DraftCupBot, config: GuildConfig) -> discord.Text
 async def _render(bot: DraftCupBot, guild_id: int) -> tuple[GuildConfig, discord.Embed, SignupPostView]:
     config = await bot.db.get_config(guild_id)
     tournament = await bot.db.active_tournament(guild_id)
+    if tournament is None:
+        raise RuntimeError("no tournament is running")
     signups = await bot.db.list_active_signups(tournament.id)
     return config, build_embed(config, tournament, signups), SignupPostView(is_open=signups_open(tournament, config))
 

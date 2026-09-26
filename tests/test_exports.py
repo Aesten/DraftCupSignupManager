@@ -50,7 +50,6 @@ def test_tournament_export():
     assert data["divisions"] == [{
         "name": "Division 1",
         "teamSize": 6,
-        "halfBudgetCapAtStart": True,
         "captains": [
             {"name": "CapOne", "class": "cav", "budget": 18.5},
             {"name": "CapTwo", "class": "inf", "budget": 22.0},
@@ -74,13 +73,13 @@ def test_tournament_export_refused():
     signups = [make_signup("P"), captain("Undecided"), picked("Lonely", 2)]
     result = exports.build_tournament(config(), signups, NAMES)
     assert result.files == {}
-    assert any("Undecided" in e for e in result.errors)
+    assert any("haven't been accepted or rejected yet: Undecided" in e for e in result.errors)
     assert any("Division 2 has only 1 captain" in e for e in result.errors)
 
 
 def test_tournament_export_needs_a_division():
     result = exports.build_tournament(config(), [make_signup("P")], NAMES)
-    assert result.errors == ["No division has captains yet."]
+    assert result.errors == ["No captain has been accepted into a division yet."]
 
 
 def test_player_list_skips_pending_captains():

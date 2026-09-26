@@ -143,22 +143,8 @@ def signup_change_line(
         line = f"ℹ️ <@{user_id}> (**{nickname}**) rejoined the server"
     else:
         line = f"ℹ️ <@{user_id}>: {kind} ({nickname})"
-    if details.get("captain_reset_from"):
-        line += f". Captain status reset from **{details['captain_reset_from']}** to **pending**"
+    if details.get("captain_reset_from") == "picked":
+        line += ". Their captain acceptance was reset: accept or reject them again"
     if actor_id is not None and actor_id != user_id:
         line += f" (by <@{actor_id}>)"
     return line
-
-
-def captain_status_text(status: str | None, division: int | None, division_names: list[str]) -> str:
-    if status == "picked" and division is not None:
-        name = division_names[division - 1] if division <= len(division_names) else f"Division {division}"
-        return f"picked for **{name}**"
-    if status == "pool":
-        return "moved to the **pool**"
-    return "set back to **pending**"
-
-
-def captain_status_line(details: dict, actor_id: int, division_names: list[str]) -> str:
-    action = captain_status_text(details.get("to"), details.get("to_division"), division_names)
-    return f"🎖️ Captain **{details.get('nickname', '?')}** {action} by <@{actor_id}>"

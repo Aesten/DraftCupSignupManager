@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from .bot import DraftCupBot
 
 
-# What the bot needs in the signup and admin channels. Pin Messages is for the dashboard; it replaced
+# What the bot needs in the signup and admin channels. Pin Messages is for the tournament message; it replaced
 # Manage Messages for pinning, so the bot never gets the right to delete other people's messages.
 BOT_PERMISSIONS = discord.Permissions(
     view_channel=True,
@@ -31,13 +31,16 @@ def invite_url(application_id: int) -> str:
 
 
 def is_admin(member: discord.Member | discord.User, config: GuildConfig) -> bool:
+    """Organisers are the members who can see the admin channel, plus anyone with Manage Server
+    (so /setup is always possible). Control who organises with the channel's own permissions."""
     if not isinstance(member, discord.Member):
         return False
     if member.guild_permissions.manage_guild:
         return True
-    if member.id in config.admin_user_ids:
-        return True
-    return any(role.id in config.admin_role_ids for role in member.roles)
+    if config.admin_channel_id is None:
+        return False
+    channel = member.guild.get_channel(config.admin_channel_id)
+    return channel is not None and channel.permissions_for(member).view_channel
 
 
 class NotAdmin(app_commands.CheckFailure):
@@ -56,7 +59,19 @@ def admin_only():
 
     async def predicate(interaction: discord.Interaction[DraftCupBot]) -> bool:
         if not await interaction_is_admin(interaction):
-            raise NotAdmin("Only organisers can use this command.")
+            raise NotAdmin("Only organisers (members who can see the admin channel) can use this command.")
+        return True
+
+    return app_commands.check(predicate)
+
+
+def server_manager_only():
+    """Slash command check: Manage Server, for /setup (it decides who the organisers are)."""
+
+    async def predicate(interaction: discord.Interaction[DraftCupBot]) -> bool:
+        member = interaction.user
+        if not isinstance(member, discord.Member) or not member.guild_permissions.manage_guild:
+            raise NotAdmin("Only members with the Manage Server permission can run /setup.")
         return True
 
     return app_commands.check(predicate)
