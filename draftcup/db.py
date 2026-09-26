@@ -12,11 +12,11 @@ from typing import Any
 import aiosqlite
 
 from . import rules
-from .models import CaptainStatus, Format, GuildConfig, Role, Signup, State, Tournament
+from .models import (
+    CaptainStatus, ChangeRecord, ExportRecord, ExportType, Format, GuildConfig, Role, Signup, State, Tournament,
+)
 
-SCHEMA_VERSION = 1
-
-_SCHEMA = """
+_SCHEMA_V1 = """
 CREATE TABLE guild_config (
     guild_id              INTEGER PRIMARY KEY,
     title                 TEXT    NOT NULL DEFAULT 'Draft Cup',
@@ -110,6 +110,14 @@ CREATE TABLE export_log (
 );
 """
 
+# Each entry upgrades the schema by one version; never edit an entry once released.
+_MIGRATIONS = (
+    _SCHEMA_V1,
+    # v2: export tracker remembers when it warned that an export went stale (spec §9.4).
+    "ALTER TABLE export_log ADD COLUMN stale_notified_at TEXT;",
+)
+SCHEMA_VERSION = len(_MIGRATIONS)
+
 # Columns of guild_config that map 1:1 to GuildConfig attributes.
 _CONFIG_COLUMNS = (
     "title", "format", "captains_per_division", "team_size", "division_count", "half_budget_cap",
@@ -123,6 +131,10 @@ class NicknameTaken(Exception):
     def __init__(self, nickname: str) -> None:
         super().__init__(f"The nickname **{nickname}** is already taken.")
         self.nickname = nickname
+
+
+class ActionRefused(Exception):
+    """A change that can't be applied in the current state; the message is shown to the admin."""
 
 
 def utcnow() -> datetime:
@@ -161,12 +173,12 @@ class Database:
     async def _migrate(self) -> None:
         async with self._conn.execute("PRAGMA user_version") as cur:
             (version,) = await cur.fetchone()
-        if version == 0:
-            await self._conn.executescript(_SCHEMA)
-            await self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            await self._conn.commit()
-        elif version > SCHEMA_VERSION:
+        if version > SCHEMA_VERSION:
             raise RuntimeError(f"Database schema v{version} is newer than this bot (v{SCHEMA_VERSION}).")
+        for target in range(version + 1, SCHEMA_VERSION + 1):
+            await self._conn.executescript(_MIGRATIONS[target - 1])
+            await self._conn.execute(f"PRAGMA user_version = {target}")
+            await self._conn.commit()
 
     async def _fetchone(self, sql: str, params: tuple[Any, ...] = ()) -> aiosqlite.Row | None:
         async with self._conn.execute(sql, params) as cur:
@@ -270,6 +282,11 @@ class Database:
                 )
             assert row is not None
             return self._tournament(row)
+
+    async def find_active_tournament(self, guild_id: int) -> Tournament | None:
+        """Like active_tournament, but never creates one (for events from servers that may not use the bot)."""
+        row = await self._fetchone("SELECT * FROM tournament WHERE guild_id = ? AND archived_at IS NULL", (guild_id,))
+        return self._tournament(row) if row else None
 
     async def set_state(self, tournament_id: int, state: State) -> None:
         async with self._lock:
@@ -478,6 +495,190 @@ class Database:
             )
             await self._conn.commit()
             return await self.get_signup(signup.id)
+
+    async def find_signups(self, tournament_id: int, text: str, limit: int = 25) -> list[Signup]:
+        """Active signups whose nickname or Discord username contains `text` (for autocomplete)."""
+        pattern = f"%{text.strip().lower()}%"
+        rows = await self._fetchall(
+            "SELECT * FROM signup WHERE tournament_id = ? AND withdrawn_at IS NULL"
+            " AND (lower(nickname) LIKE ? OR lower(username) LIKE ?) ORDER BY lower(nickname) LIMIT ?",
+            (tournament_id, pattern, pattern, limit),
+        )
+        return [self._signup(row) for row in rows]
+
+    async def set_review_message(self, signup_id: int, message_id: int | None) -> None:
+        """Remembers the captain review card of a signup. Not a data change: no revision bump."""
+        async with self._lock:
+            await self._conn.execute("UPDATE signup SET review_message_id = ? WHERE id = ?", (message_id, signup_id))
+            await self._conn.commit()
+
+    # -------------------------------------------------------- captain picking
+
+    async def set_captain_status(
+        self,
+        signup_id: int,
+        status: CaptainStatus,
+        division_index: int | None,
+        actor_id: int,
+        *,
+        division_count: int,
+        capacity: int,
+    ) -> tuple[Signup, dict[str, Any]]:
+        """Sets a captain candidate's status (spec §6.2). Raises ActionRefused.
+
+        Returns the signup and the change-log details; details are empty when nothing changed.
+        """
+        if status is CaptainStatus.PICKED:
+            if division_index is None or not 1 <= division_index <= division_count:
+                raise ActionRefused("Pick a valid division.")
+        else:
+            division_index = None
+        async with self._lock:
+            signup = await self.get_signup(signup_id)
+            if signup is None or signup.withdrawn_at is not None:
+                raise ActionRefused("This signup was withdrawn.")
+            if signup.role is not Role.CAPTAIN:
+                raise ActionRefused(f"**{signup.nickname}** is no longer a captain candidate.")
+            tournament = await self._fetchone("SELECT archived_at FROM tournament WHERE id = ?", (signup.tournament_id,))
+            if tournament is None or tournament["archived_at"] is not None:
+                raise ActionRefused("This signup belongs to an archived tournament.")
+            if signup.captain_status is status and signup.division_index == division_index:
+                return signup, {}
+            if status is CaptainStatus.PICKED:
+                row = await self._fetchone(
+                    "SELECT count(*) AS n FROM signup WHERE tournament_id = ? AND withdrawn_at IS NULL"
+                    " AND captain_status = 'picked' AND division_index = ? AND id != ?",
+                    (signup.tournament_id, division_index, signup_id),
+                )
+                assert row is not None
+                if row["n"] >= capacity:
+                    raise ActionRefused(f"That division already has {capacity} captains.")
+            await self._conn.execute(
+                "UPDATE signup SET captain_status = ?, division_index = ?, status_set_by = ? WHERE id = ?",
+                (status.value, division_index, actor_id, signup_id),
+            )
+            details = {
+                "nickname": signup.nickname,
+                "from": signup.captain_status.value if signup.captain_status else None,
+                "from_division": signup.division_index,
+                "to": status.value,
+                "to_division": division_index,
+            }
+            await self._record_change(signup.tournament_id, actor_id, signup_id, "captain_status", details)
+            await self._conn.commit()
+            updated = await self.get_signup(signup_id)
+            assert updated is not None
+            return updated, details
+
+    async def highest_used_division(self, tournament_id: int) -> int:
+        row = await self._fetchone(
+            "SELECT max(division_index) AS m FROM signup WHERE tournament_id = ? AND withdrawn_at IS NULL"
+            " AND captain_status = 'picked'",
+            (tournament_id,),
+        )
+        return (row["m"] if row else None) or 0
+
+    # -------------------------------------------------------------- divisions
+
+    async def division_names(self, tournament_id: int, count: int) -> list[str]:
+        """Names of divisions 1…count; unnamed ones are called "Division N"."""
+        rows = await self._fetchall("SELECT idx, name FROM division WHERE tournament_id = ?", (tournament_id,))
+        names = {row["idx"]: row["name"] for row in rows}
+        return [names.get(i, f"Division {i}") for i in range(1, count + 1)]
+
+    async def rename_division(self, tournament_id: int, index: int, name: str, actor_id: int) -> None:
+        async with self._lock:
+            await self._conn.execute(
+                "INSERT INTO division (tournament_id, idx, name) VALUES (?, ?, ?)"
+                " ON CONFLICT (tournament_id, idx) DO UPDATE SET name = excluded.name",
+                (tournament_id, index, name),
+            )
+            await self._record_change(tournament_id, actor_id, None, "division_rename", {"index": index, "name": name})
+            await self._conn.commit()
+
+    # ------------------------------------------------------ config & lifecycle
+
+    async def record_config_change(self, tournament_id: int, actor_id: int, key: str, value: str) -> None:
+        """Config changes that alter export content count as changes for the export tracker."""
+        async with self._lock:
+            await self._record_change(tournament_id, actor_id, None, "config", {"key": key, "value": value})
+            await self._conn.commit()
+
+    async def archive_tournament(self, tournament_id: int) -> Tournament:
+        """Archives the tournament and returns the new, empty one (division names are carried over)."""
+        async with self._lock:
+            row = await self._fetchone("SELECT guild_id FROM tournament WHERE id = ?", (tournament_id,))
+            assert row is not None
+            now = _dt_to_db(utcnow())
+            await self._conn.execute("UPDATE tournament SET archived_at = ? WHERE id = ?", (now, tournament_id))
+            cur = await self._conn.execute(
+                "INSERT INTO tournament (guild_id, created_at) VALUES (?, ?)", (row["guild_id"], now)
+            )
+            await self._conn.execute(
+                "INSERT INTO division (tournament_id, idx, name) SELECT ?, idx, name FROM division WHERE tournament_id = ?",
+                (cur.lastrowid, tournament_id),
+            )
+            await self._conn.commit()
+            new = await self._fetchone("SELECT * FROM tournament WHERE id = ?", (cur.lastrowid,))
+            assert new is not None
+            return self._tournament(new)
+
+    # ---------------------------------------------------------------- exports
+
+    @staticmethod
+    def _export(row: aiosqlite.Row) -> ExportRecord:
+        return ExportRecord(
+            id=row["id"],
+            type=ExportType(row["type"]),
+            revision=row["revision"],
+            time=datetime.fromisoformat(row["time"]),
+            actor_id=row["actor_id"],
+            stale_notified_at=_dt_from_db(row["stale_notified_at"]),
+        )
+
+    async def record_export(self, tournament_id: int, export_type: ExportType, revision: int, actor_id: int) -> None:
+        """`revision` is the one the export was built from, read before building it."""
+        async with self._lock:
+            await self._conn.execute(
+                "INSERT INTO export_log (tournament_id, type, revision, time, actor_id) VALUES (?, ?, ?, ?, ?)",
+                (tournament_id, export_type.value, revision, _dt_to_db(utcnow()), actor_id),
+            )
+            await self._conn.commit()
+
+    async def latest_exports(self, tournament_id: int) -> dict[ExportType, ExportRecord]:
+        rows = await self._fetchall(
+            "SELECT * FROM export_log WHERE id IN (SELECT max(id) FROM export_log WHERE tournament_id = ? GROUP BY type)",
+            (tournament_id,),
+        )
+        return {record.type: record for record in map(self._export, rows)}
+
+    async def mark_stale_notified(self, export_id: int) -> None:
+        async with self._lock:
+            await self._conn.execute(
+                "UPDATE export_log SET stale_notified_at = ? WHERE id = ?", (_dt_to_db(utcnow()), export_id)
+            )
+            await self._conn.commit()
+
+    async def changes_since(self, tournament_id: int, revision: int) -> list[ChangeRecord]:
+        rows = await self._fetchall(
+            "SELECT * FROM change_log WHERE tournament_id = ? AND revision > ? ORDER BY revision",
+            (tournament_id, revision),
+        )
+        return [
+            ChangeRecord(
+                revision=row["revision"],
+                time=datetime.fromisoformat(row["time"]),
+                actor_id=row["actor_id"],
+                signup_id=row["signup_id"],
+                kind=row["kind"],
+                details=json.loads(row["details"]),
+            )
+            for row in rows
+        ]
+
+    async def active_tournaments(self) -> list[Tournament]:
+        rows = await self._fetchall("SELECT * FROM tournament WHERE archived_at IS NULL")
+        return [self._tournament(row) for row in rows]
 
 
 def _changed_fields(before: rules.SignupFields, after: rules.SignupFields) -> list[str]:

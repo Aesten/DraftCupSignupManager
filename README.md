@@ -8,16 +8,12 @@ A Discord bot that runs signups for the Bannerlord Draft Cup and exports the res
 
 ## Status
 
-Implemented so far:
+Implemented: everything in the spec. That covers the signup post and flow, the admin commands,
+captain review cards and `/captains`, the pinned status board, grouped admin notifications,
+the CSV, player list and tournament exports, and the export tracker with stale notices.
 
-- signup post with **Sign up as Player / Captain** and **My signup** buttons;
-- agreement step, 5-field signup modal with validation, edit, role switch and withdraw;
-- tier and captain budget computation;
-- `/setup`, `/config show|set`, `/admins add|remove`, `/signups open|reopen|close`;
-- scheduled close, and a notice in the admin channel for every signup change or member leaving.
-
-Not yet: status board, captain review cards and picking, admin signup commands (`/signup …`),
-exports and the export tracker, grouping of admin notifications.
+It has unit tests but hasn't been run against Discord yet: the first run in a test server is the
+real check.
 
 ## Discord application setup
 
@@ -26,7 +22,7 @@ exports and the export tracker, grouping of admin notifications.
    to notice signed-up members leaving).
 3. Invite the bot with the `bot` and `applications.commands` scopes and these permissions in the
    signup and admin channels: *View Channel*, *Send Messages*, *Embed Links*, *Attach Files*,
-   *Read Message History*.
+   *Read Message History*, plus *Manage Messages* in the admin channel to pin the status board.
 
 ## Running
 
@@ -39,8 +35,8 @@ cp .env.example .env   # then set DISCORD_TOKEN
 .venv/bin/python -m draftcup
 ```
 
-Global slash commands can take a moment to show up the first time. Set `DEV_GUILD_ID` to also
-sync them to one server instantly.
+One process serves every server the bot is invited to, each with its own settings and data. To
+try things out, invite the same bot to a test server and run `/setup` there too.
 
 To run it as a service, see [`deploy/draftcup-signup.service`](deploy/draftcup-signup.service).
 
@@ -52,8 +48,14 @@ Anyone with *Manage Server* is an admin; more can be added with `/admins add`.
 2. `/config set` for `title`, `timezone`, `tournament_date`, `auction_date` and optionally
    `rules_url`, `team_size`, `division_count`.
 3. `/signups open format:<Captain Pick|Random Pick> closes_at:2026-10-16 20:00`
+4. While signups run, the admin channel shows the status board, one card per captain candidate
+   (buttons: a division, Pool, Reset) and a line per change. `/captains` decides for several at once.
+5. `/export csv` and `/export players` work any time. `/export tournament` works once every captain
+   candidate is picked or moved to the pool. Files are posted in the admin channel.
+6. `/tournament reset confirm:RESET` archives everything for the next cup.
 
-Dates are written `YYYY-MM-DD HH:MM` in the configured timezone.
+Dates are written `YYYY-MM-DD HH:MM` in the configured timezone. Organiser commands on a signup
+(`/signup view|edit|role|remove`, `/captain`) autocomplete on nickname or Discord username.
 
 ## Development
 
@@ -66,10 +68,17 @@ Code layout:
 
 | Path | Content |
 |---|---|
-| `draftcup/rules.py` | Validation, tier and budget rules (pure functions, unit-tested). |
-| `draftcup/db.py` | SQLite schema and queries. |
+| `draftcup/rules.py` | Validation, tier and budget rules (pure functions). |
+| `draftcup/exports.py` | CSV / JSON builders, coverage stats, change summaries (pure functions). |
+| `draftcup/db.py` | SQLite schema, migrations and queries. |
 | `draftcup/models.py` | Data classes and enums. |
+| `draftcup/events.py` | What follows a change: admin line, captain card, status board. |
+| `draftcup/notify.py` | Admin channel feed (grouped lines) and change wording. |
 | `draftcup/views/signup_post.py` | The public signup post and its persistent buttons. |
 | `draftcup/views/signup_flow.py` | Agreement step, signup modal, "My signup". |
-| `draftcup/cogs/admin.py` | `/setup`, `/config`, `/admins`, `/signups`. |
-| `draftcup/cogs/lifecycle.py` | Scheduled close, member leave/join. |
+| `draftcup/views/captain_card.py` | Captain review cards and captain decisions. |
+| `draftcup/views/captains_list.py` | `/captains` bulk view. |
+| `draftcup/views/status_board.py` | Pinned status board. |
+| `draftcup/cogs/admin.py` | `/setup`, `/config`, `/admins`, `/signups`, `/division`, `/tournament`. |
+| `draftcup/cogs/management.py` | `/signup …`, `/captain`, `/captains`, `/export …`. |
+| `draftcup/cogs/lifecycle.py` | Scheduled close, stale export notices, member leave/join. |

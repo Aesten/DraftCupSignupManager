@@ -11,7 +11,6 @@ import discord
 from .. import rules
 from ..db import NicknameTaken, utcnow
 from ..models import GuildConfig, Role, Signup
-from ..notify import notify_admins, signup_change_line
 from ..timeutil import discord_ts
 
 if TYPE_CHECKING:
@@ -154,7 +153,8 @@ class SignupModal(discord.ui.Modal):
     """The 5-field signup form. Discord allows at most 5 fields, hence the separate agreement step.
 
     `agreed_at` is when the agreement step was accepted, or None for an edit (keeps the stored time).
-    `target` and `admin` are for organisers editing someone else's signup: the open/closed check is skipped.
+    `target` is set when an organiser fills in someone else's signup: (user ID, username). The open/closed
+    check is then skipped.
     """
 
     def __init__(
@@ -163,14 +163,14 @@ class SignupModal(discord.ui.Modal):
         form: rules.SignupForm,
         agreed_at: datetime | None,
         *,
-        target: discord.abc.User | None = None,
-        admin: bool = False,
+        target: tuple[int, str] | None = None,
     ) -> None:
-        super().__init__(title=f"{role.label} signup", timeout=VIEW_TIMEOUT)
+        title = f"{role.label} signup" if target is None else f"{role.label} signup of {target[1]}"
+        super().__init__(title=title[:45], timeout=VIEW_TIMEOUT)
         self.role = role
+        self.form = form
         self.agreed_at = agreed_at
         self.target = target
-        self.admin = admin
 
         self.nickname = discord.ui.TextInput(
             max_length=rules.NICKNAME_MAX, default=form.nickname or None, placeholder="Your in-game name"
@@ -217,28 +217,30 @@ class SignupModal(discord.ui.Modal):
         )
 
     async def on_submit(self, interaction: Interaction) -> None:
+        from .. import events  # events imports signup_post, which imports this module
+
         assert interaction.guild is not None
-        if not self.admin and not await _is_open(interaction):
+        if self.target is None and not await _is_open(interaction):
             await interaction.response.send_message(CLOSED_MESSAGE, ephemeral=True)
             return
 
         form = self.typed_form()
-        target = self.target or interaction.user
+        target_id, target_name = self.target or (interaction.user.id, interaction.user.name)
         db = interaction.client.db
         fields, errors = rules.validate_form(form)
         if fields is not None:
             tournament = await db.active_tournament(interaction.guild.id)
             try:
                 signup, kind, details = await db.save_signup(
-                    tournament.id, target.id, target.name, self.role, fields, self.agreed_at, interaction.user.id
+                    tournament.id, target_id, target_name, self.role, fields, self.agreed_at, interaction.user.id
                 )
             except NicknameTaken as exc:
                 errors = [str(exc)]
 
         if errors:
-            retry = RetryView(self.role, form, self.agreed_at, target=self.target, admin=self.admin)
+            retry = RetryView(self.role, form, self.agreed_at, target=self.target)
             await interaction.response.send_message(
-                "Your signup couldn't be saved:\n" + "\n".join(f"- {error}" for error in errors),
+                "The signup couldn't be saved:\n" + "\n".join(f"- {error}" for error in errors),
                 view=retry,
                 ephemeral=True,
             )
@@ -246,13 +248,9 @@ class SignupModal(discord.ui.Modal):
 
         heading = {"signup": "✅ You're signed up!", "unchanged": "Nothing changed"}.get(kind, "✅ Signup updated")
         if self.target is not None:
-            heading = f"Signup of {target.name} saved"
+            heading = f"Signup of {target_name}: {'nothing changed' if kind == 'unchanged' else 'saved'}"
         await interaction.response.send_message(embed=signup_embed(signup, heading), ephemeral=True)
-        if kind != "unchanged":
-            line = signup_change_line(
-                target.id, interaction.user.id, kind, details, signup.player_class, signup.highest_division
-            )
-            await notify_admins(interaction.client, interaction.guild.id, line)
+        await events.signup_changed(interaction.client, interaction.guild.id, signup, kind, details, interaction.user.id)
 
     async def on_error(self, interaction: Interaction, error: Exception) -> None:
         log.exception("Signup modal failed", exc_info=error)
@@ -270,16 +268,15 @@ class RetryView(discord.ui.View):
         form: rules.SignupForm,
         agreed_at: datetime | None,
         *,
-        target: discord.abc.User | None,
-        admin: bool,
+        target: tuple[int, str] | None,
     ) -> None:
         super().__init__(timeout=VIEW_TIMEOUT)
         self.modal_args = (role, form, agreed_at)
-        self.modal_kwargs = {"target": target, "admin": admin}
+        self.target = target
 
     @discord.ui.button(label="Try again", style=discord.ButtonStyle.primary)
     async def retry(self, interaction: Interaction, _: discord.ui.Button) -> None:
-        await interaction.response.send_modal(SignupModal(*self.modal_args, **self.modal_kwargs))
+        await interaction.response.send_modal(SignupModal(*self.modal_args, target=self.target))
 
 
 # ------------------------------------------------------------------- My signup
@@ -329,25 +326,29 @@ class MySignupView(discord.ui.View):
 
 
 class ConfirmWithdrawView(discord.ui.View):
-    def __init__(self, signup_id: int) -> None:
+    """`admin`: an organiser removing someone's signup, allowed whether signups are open or not."""
+
+    def __init__(self, signup_id: int, *, admin: bool = False) -> None:
         super().__init__(timeout=VIEW_TIMEOUT)
         self.signup_id = signup_id
+        self.admin = admin
 
     @discord.ui.button(label="Yes, withdraw", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: Interaction, _: discord.ui.Button) -> None:
+        from .. import events
+
         assert interaction.guild is not None
-        if not await _is_open(interaction):
+        if not self.admin and not await _is_open(interaction):
             await interaction.response.edit_message(content=CLOSED_MESSAGE, view=None)
             return
         signup = await interaction.client.db.withdraw_signup(self.signup_id, interaction.user.id)
         if signup is None:
             await interaction.response.edit_message(content="This signup was already withdrawn.", view=None)
             return
-        await interaction.response.edit_message(content="Your signup was withdrawn.", view=None)
-        line = signup_change_line(
-            signup.user_id, interaction.user.id, "withdraw", {"role": signup.role.value, "nickname": signup.nickname}
-        )
-        await notify_admins(interaction.client, interaction.guild.id, line)
+        who = f"The signup of **{signup.nickname}** was" if self.admin else "Your signup was"
+        await interaction.response.edit_message(content=f"{who} withdrawn.", view=None)
+        details = {"role": signup.role.value, "nickname": signup.nickname}
+        await events.signup_changed(interaction.client, interaction.guild.id, signup, "withdraw", details, interaction.user.id)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: Interaction, _: discord.ui.Button) -> None:

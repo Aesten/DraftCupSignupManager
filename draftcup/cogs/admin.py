@@ -10,12 +10,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from .. import events
 from ..db import utcnow
 from ..models import Format, GuildConfig, State
 from ..notify import notify_admins
 from ..permissions import admin_only
 from ..timeutil import INPUT_HINT, discord_ts, format_local, parse_local, zone
-from ..views import signup_post
+from ..views import captain_card, signup_post, status_board
 
 if TYPE_CHECKING:
     from ..bot import DraftCupBot
@@ -149,6 +150,12 @@ def missing_for_opening(config: GuildConfig) -> list[str]:
 
 FORMAT_CHOICES = [app_commands.Choice(name=f.label, value=f.value) for f in Format]
 
+# Settings that change the content of exported files: changing them makes exports stale (spec §9.4).
+EXPORT_KEYS = {"title", "format", "team_size", "half_budget_cap", "division_count"}
+# Settings shown on the captain cards' buttons.
+CARD_KEYS = {"division_count"}
+RESET_WORD = "RESET"
+
 
 class AdminCog(commands.Cog):
     def __init__(self, bot: DraftCupBot) -> None:
@@ -173,6 +180,7 @@ class AdminCog(commands.Cog):
             guild_id, signup_channel_id=signup_channel.id, admin_channel_id=admin_channel.id
         )
         moved = old.signup_channel_id != signup_channel.id
+        admin_moved = old.admin_channel_id != admin_channel.id
         try:
             await signup_post.post_or_refresh(self.bot, guild_id, repost=moved)
         except discord.Forbidden:
@@ -183,6 +191,7 @@ class AdminCog(commands.Cog):
             return
         if moved and old.signup_channel_id and old.signup_message_id:
             await self._delete_message(old.signup_channel_id, old.signup_message_id)
+        await status_board.refresh_board(self.bot, guild_id, repost=admin_moved)
         await interaction.followup.send(
             f"Signup post is in {signup_channel.mention}, admin messages go to {admin_channel.mention}.",
             ephemeral=True,
@@ -217,19 +226,29 @@ class AdminCog(commands.Cog):
         guild_id = interaction.guild.id
         config = await self.bot.db.get_config(guild_id)
         parse, _ = CONFIG_KEYS[key]
+        tournament = await self.bot.db.active_tournament(guild_id)
         try:
             parsed = parse(value, config)
-            if key == "closes_at":
-                tournament = await self.bot.db.active_tournament(guild_id)
-                if tournament.state is State.OPEN and (parsed is None or parsed <= utcnow()):
-                    raise ValueError("Signups are open: the close time must be in the future. Use `/signups close` to close now.")
+            if key == "closes_at" and tournament.state is State.OPEN and (parsed is None or parsed <= utcnow()):
+                raise ValueError("Signups are open: the close time must be in the future. Use `/signups close` to close now.")
+            if key == "division_count":
+                used = await self.bot.db.highest_used_division(tournament.id)
+                if parsed < used:
+                    raise ValueError(f"Captains are picked in division {used}. Move them first.")
         except ValueError as exc:
             await interaction.response.send_message(f"❌ `{key}`: {exc}", ephemeral=True)
             return
+        if getattr(config, key) == parsed:
+            await interaction.response.send_message(f"`{key}` is already set to that.", ephemeral=True)
+            return
         await self.bot.db.update_config(guild_id, **{key: parsed})
         await interaction.response.send_message(f"✅ `{key}` updated.", ephemeral=True)
-        await signup_post.refresh(self.bot, guild_id)
+        if key in EXPORT_KEYS:
+            await self.bot.db.record_config_change(tournament.id, interaction.user.id, key, value.strip())
         await notify_admins(self.bot, guild_id, f"⚙️ {interaction.user.mention} set `{key}` to `{value.strip()}`.")
+        await events.tournament_changed(self.bot, guild_id)
+        if key in CARD_KEYS:
+            await captain_card.refresh_all_cards(self.bot, guild_id)
 
     # ------------------------------------------------------------------ /admins
 
@@ -306,16 +325,19 @@ class AdminCog(commands.Cog):
             await interaction.response.send_message("❌ The close time must be in the future.", ephemeral=True)
             return
 
+        tournament_format = config.format
         changes: dict[str, Any] = {"closes_at": close_time}
         if format is not None:
             changes["format"] = Format(format)
         config = await db.update_config(guild_id, **changes)
+        if format is not None and Format(format) is not tournament_format:
+            await db.record_config_change(tournament.id, interaction.user.id, "format", format)
         await db.set_state(tournament.id, State.OPEN)
         verb = "reopened" if reopen else "opened"
         await interaction.response.send_message(
             f"✅ Signups {verb} ({config.format.label}). They close {discord_ts(close_time, 'f')}.", ephemeral=True
         )
-        await signup_post.refresh(self.bot, guild_id)
+        await events.tournament_changed(self.bot, guild_id)
         await notify_admins(
             self.bot, guild_id,
             f"🟢 Signups {verb} by {interaction.user.mention} ({config.format.label}), closing {discord_ts(close_time, 'f')}.",
@@ -345,8 +367,66 @@ class AdminCog(commands.Cog):
             return
         await self.bot.db.set_state(tournament.id, State.CLOSED)
         await interaction.response.send_message("✅ Signups closed.", ephemeral=True)
-        await signup_post.refresh(self.bot, guild_id)
         await notify_admins(self.bot, guild_id, f"🔒 Signups closed by {interaction.user.mention}.")
+        await events.tournament_changed(self.bot, guild_id)
+
+    # ---------------------------------------------------------------- /division
+
+    division_group = app_commands.Group(name="division", description="Divisions (only organisers see them).", guild_only=True)
+
+    @division_group.command(name="rename", description="Rename a division.")
+    @app_commands.describe(index="Division number (1, 2…)", name="New name, max 40 characters")
+    @admin_only()
+    async def division_rename(
+        self, interaction: discord.Interaction[DraftCupBot], index: app_commands.Range[int, 1, MAX_DIVISIONS], name: str
+    ) -> None:
+        assert interaction.guild is not None
+        guild_id = interaction.guild.id
+        config = await self.bot.db.get_config(guild_id)
+        name = " ".join(name.split())
+        if index > config.division_count:
+            await interaction.response.send_message(
+                f"❌ There are only {config.division_count} divisions (`/config set division_count`).", ephemeral=True
+            )
+            return
+        if not 1 <= len(name) <= 40:
+            await interaction.response.send_message("❌ The name must be 1–40 characters long.", ephemeral=True)
+            return
+        tournament = await self.bot.db.active_tournament(guild_id)
+        names = await self.bot.db.division_names(tournament.id, config.division_count)
+        if any(other.lower() == name.lower() for i, other in enumerate(names, start=1) if i != index):
+            await interaction.response.send_message("❌ Another division already has that name.", ephemeral=True)
+            return
+        await self.bot.db.rename_division(tournament.id, index, name, interaction.user.id)
+        await interaction.response.send_message(f"✅ Division {index} is now **{name}**.", ephemeral=True)
+        await notify_admins(self.bot, guild_id, f"⚙️ {interaction.user.mention} renamed division {index} to **{name}**.")
+        self.bot.board.request(guild_id)
+        await captain_card.refresh_all_cards(self.bot, guild_id)
+
+    # -------------------------------------------------------------- /tournament
+
+    tournament_group = app_commands.Group(name="tournament", description="The tournament as a whole.", guild_only=True)
+
+    @tournament_group.command(name="reset", description="Archive every signup and start a new, empty tournament.")
+    @app_commands.describe(confirm=f"Type {RESET_WORD} to confirm")
+    @admin_only()
+    async def tournament_reset(self, interaction: discord.Interaction[DraftCupBot], confirm: str) -> None:
+        assert interaction.guild is not None
+        if confirm.strip() != RESET_WORD:
+            await interaction.response.send_message(f"❌ Type `{RESET_WORD}` in `confirm` to reset.", ephemeral=True)
+            return
+        guild_id = interaction.guild.id
+        tournament = await self.bot.db.active_tournament(guild_id)
+        await self.bot.db.archive_tournament(tournament.id)
+        await self.bot.db.update_config(guild_id, closes_at=None)
+        await interaction.response.send_message(
+            "✅ The tournament was archived. A new one is in draft: set the dates, then `/signups open`.", ephemeral=True
+        )
+        await notify_admins(
+            self.bot, guild_id,
+            f"🗃️ {interaction.user.mention} archived the tournament. Earlier captain cards no longer work.",
+        )
+        await events.tournament_changed(self.bot, guild_id)
 
 
 async def setup(bot: DraftCupBot) -> None:

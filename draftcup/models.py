@@ -109,3 +109,33 @@ class Signup:
     @property
     def budget(self) -> float:
         return rules.budget_for(self.highest_division, self.player_class)
+
+
+class ExportType(StrEnum):
+    CSV = "csv"
+    PLAYERS = "players"
+    TOURNAMENT = "tournament"
+
+    @property
+    def label(self) -> str:
+        return {"csv": "CSV", "players": "Player list", "tournament": "Tournament file"}[self.value]
+
+
+@dataclass
+class ExportRecord:
+    id: int
+    type: ExportType
+    revision: int
+    time: datetime
+    actor_id: int | None
+    stale_notified_at: datetime | None
+
+
+@dataclass
+class ChangeRecord:
+    revision: int
+    time: datetime
+    actor_id: int | None
+    signup_id: int | None
+    kind: str
+    details: dict

@@ -9,16 +9,21 @@ from discord import app_commands
 from discord.ext import commands
 
 from .db import Database
+from .notify import AdminFeed
 from .permissions import NotAdmin
 from .settings import Settings
+from .views.captain_card import CaptainAction
 from .views.signup_post import SignupPostView
+from .views.status_board import BoardRefresher
 
 log = logging.getLogger(__name__)
 
-EXTENSIONS = ("draftcup.cogs.admin", "draftcup.cogs.lifecycle")
+EXTENSIONS = ("draftcup.cogs.admin", "draftcup.cogs.management", "draftcup.cogs.lifecycle")
 
 
 class DraftCupBot(commands.Bot):
+    """One process serves every server the bot is in; all data is kept per server (guild ID)."""
+
     db: Database
 
     def __init__(self, settings: Settings) -> None:
@@ -30,20 +35,20 @@ class DraftCupBot(commands.Bot):
             allowed_mentions=discord.AllowedMentions.none(),
         )
         self.settings = settings
+        self.feed = AdminFeed(self)
+        self.board = BoardRefresher(self)
         self.tree.on_error = self.on_app_command_error
 
     async def setup_hook(self) -> None:
         self.db = await Database.open(self.settings.database_path)
         for extension in EXTENSIONS:
             await self.load_extension(extension)
-        # One instance handles the buttons of every server's signup post, including posts made
-        # before a restart (the custom IDs are fixed).
+        # Persistent buttons, including on messages posted before a restart: one view instance handles
+        # every server's signup post (fixed custom IDs), and captain card buttons carry their signup ID.
         self.add_view(SignupPostView())
+        self.add_dynamic_items(CaptainAction)
 
-        if self.settings.dev_guild_id:
-            guild = discord.Object(self.settings.dev_guild_id)
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
+        # Global commands: available in every server the bot is in (test and production alike).
         synced = await self.tree.sync()
         log.info("Synced %d slash commands", len(synced))
 

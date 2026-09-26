@@ -10,7 +10,7 @@ The output file format is defined in [`draftcup-bot-spec.md`](draftcup-bot-spec.
 
 ## 1. Scope and principles
 
-- **One tournament per Discord server** at a time. The bot can be in several servers; each has its own config and data.
+- **One tournament per Discord server** at a time. One bot process serves several servers (e.g. a test server next to the real one); each has its own config, admins, channels and data.
 - **Discord only**, no web interface. Users interact through buttons, modals and ephemeral replies. Admins also use slash commands and a dedicated admin channel.
 - **Two channels:**
   - **Signup channel:** one public signup post with buttons. Every reply to a user is **ephemeral**.
@@ -135,7 +135,7 @@ The bot keeps **one pinned message** in the admin channel and edits it on every 
 - **Coverage:** needs are computed for **1, 2 … `division_count`** divisions:
   - captains needed = `divisions × captains_per_division`;
   - players needed = `divisions × captains_per_division × team_size`;
-  - both are compared with what is available. Example: `2 divisions: captains 17/16 ✅ · players 90/96 ⚠️ (−6)`. Captain candidates count as captains for this until they're moved to the pool.
+  - both are compared with what is available. Example: `2 divisions: captains 17/16 ✅ · players 90/96 ⚠️ (−6)`. Captain candidates count as captains until they're moved to the pool; candidates beyond the captains needed also count as players, since unpicked captains join the pool.
 - **Divisions:** picked captains per division, e.g. `Division 1: 8/8 · Division 2: 5/8`.
 - **Export freshness:** for each export type, the last export time and whether it's up to date or stale (§9).
 
@@ -149,13 +149,13 @@ For each captain candidate, the bot posts a **card** in the admin channel showin
 
 A division button is refused if the division already has `captains_per_division` captains. The card shows the current status and who set it. If there are too many buttons for one row, they wrap to more rows; Discord allows up to 5 rows of 5 buttons.
 
-`/captains list` gives the same actions in bulk, as an ephemeral summary with a select menu per status, for admins who prefer not to scroll through cards.
+`/captains` gives the same actions in bulk: an ephemeral summary grouped by status and division, a select menu of candidates (up to 25, pending first), and one button per division plus Pool and Reset that apply to every selected candidate.
 
 ### 6.3 Notifications
 
 These go to the admin channel as persistent messages:
 
-- new signups, edits, withdrawals and role switches, one line each. A burst of changes within 60 s is grouped into one message.
+- new signups, edits, withdrawals, role switches and captain decisions, one line each. Lines posted within 60 s of the first one are grouped by editing that message; any other bot message (a card, an export, a notice) starts a new group.
 - signups opened or closed, whether automatically or by an admin;
 - admin actions, with the admin's name (the audit trail);
 - a **stale export** notice (§9);
@@ -174,13 +174,13 @@ All commands are slash commands restricted to admins, and all replies are epheme
 | `/signups open format: closes_at:` | Opens signups for the chosen format (`captainPick` or `randomPick`) and schedules the close. Both are required; `closes_at` must be in the future. The format and close time are shown on the signup post. |
 | `/signups close` | Closes signups immediately, before the scheduled time. |
 | `/signups reopen closes_at:` | Reopens after a close, with a new close time (required, in the future). |
-| `/signup view user:` | Shows a signup. The user can be picked as a Discord member, or by nickname with autocomplete. |
-| `/signup edit user:` | Opens the signup modal pre-filled, with no agreement step and no open/closed check. |
-| `/signup add user:` | Creates a signup for a member, e.g. one posted by DM. It asks for the role, then opens the modal. |
-| `/signup role user: role:` | Switches between player and captain. |
-| `/signup remove user:` | Withdraws a signup, after confirmation. |
-| `/captain set user: status: [division]` | Same as the card buttons (§6.2). |
-| `/captains list` | Bulk view and actions (§6.2). |
+| `/signup view signup:` | Shows a signup with its tier and budget. `signup:` autocompletes on nickname or Discord username. |
+| `/signup edit signup:` | Opens the signup modal pre-filled, with no agreement step and no open/closed check. |
+| `/signup add user: role:` | Creates a signup for a member, e.g. one posted by DM, by opening the empty modal. The organiser vouches for the agreement. |
+| `/signup role signup: role:` | Switches between player and captain. |
+| `/signup remove signup:` | Withdraws a signup, after confirmation. |
+| `/captain signup: status: [division]` | Same as the card buttons (§6.2). |
+| `/captains` | Bulk view and actions (§6.2). |
 | `/export csv` | Returns `players.csv` and `captains.csv` (§9.1). Always available. |
 | `/export players` | Returns the player list JSON (§9.2). Always available. |
 | `/export tournament` | Returns `<title>.draftcup.json` (§9.3). Only available when its prerequisites are met. |
@@ -223,10 +223,11 @@ Columns: `nickname, discord_id, discord_username, steam_url, class, highest_divi
 **Prerequisites.** The export is refused, with a clear list of what's missing, unless:
 
 - every active captain candidate is `picked` (and so has a division) or `pool`. No candidate is `pending`.
-- every division has at least 2 captains. The app can't run an auction with fewer.
+- at least one division has captains, and no division has exactly 1. The app can't run an auction with fewer than 2.
 
 **Warnings.** The file is still produced, with these warnings:
 
+- a division has no captains: it is left out of the file (e.g. only one division runs);
 - a division has fewer than `captains_per_division` captains;
 - the pool is smaller than `picked captains × team_size`.
 
@@ -241,7 +242,7 @@ The file name is `<title-slug>.draftcup.json`.
 
 ### 9.4 Export tracker
 
-- Every change to signup data or captain status increments the tournament **revision** and writes a row to the change log.
+- Every change to signup data or captain status increments the tournament **revision** and writes a row to the change log. So do settings that change exported content: `title`, `format`, `team_size`, `half_budget_cap`, `division_count` and division names.
 - Every export records its type (`csv`, `players`, `tournament`), the revision it was made at, the time and the admin.
 - An export type is **stale** when the current revision is higher than the revision of its latest export. The status board always shows this (§6.1).
 - When an export **becomes** stale, the bot posts one notice in the admin channel. The notice is sent 5 minutes after the first change, to group bursts, and summarises the changes since that export, e.g. *"Tournament export from 18:42 is stale: +2 players, 1 withdrawal, 1 captain moved to pool."* There is no further notice for that type until it is exported again.
@@ -268,7 +269,7 @@ Nickname uniqueness is enforced in code, case-insensitively and only among activ
 - Gateway intents: `guilds` and `members`, to detect members leaving and resolve display names. No message content intent is needed.
 - Slash commands are synced globally at startup.
 - Buttons use persistent views, so they keep working after a restart.
-- It runs as a single process under the host's existing process manager (systemd or Docker, like the other bots).
+- It runs as a single process under the host's existing process manager (systemd). That process serves every server the bot is invited to, so a test server needs no second instance.
 
 ## 12. Out of scope (for now)
 
