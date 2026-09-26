@@ -6,12 +6,12 @@ import asyncio
 import json
 import sqlite3
 from dataclasses import fields as dataclass_fields
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 import aiosqlite
 
-from . import rules
+from . import rules, timeutil
 from .models import (
     CaptainStatus, ChangeRecord, ExportRecord, ExportType, Format, GuildConfig, Role, Signup, State, Tournament,
 )
@@ -115,16 +115,28 @@ _MIGRATIONS = (
     _SCHEMA_V1,
     # v2: export tracker remembers when it warned that an export went stale (spec §9.4).
     "ALTER TABLE export_log ADD COLUMN stale_notified_at TEXT;",
+    # v3: dates are picked as days; signups close at close_time on close_date (server timezone).
+    """
+    ALTER TABLE guild_config ADD COLUMN close_date TEXT;
+    ALTER TABLE guild_config ADD COLUMN close_time TEXT NOT NULL DEFAULT '23:59';
+    UPDATE guild_config SET
+        tournament_date = substr(tournament_date, 1, 10),
+        auction_date = substr(auction_date, 1, 10),
+        close_date = substr(closes_at, 1, 10);
+    """,
 )
 SCHEMA_VERSION = len(_MIGRATIONS)
 
 # Columns of guild_config that map 1:1 to GuildConfig attributes.
 _CONFIG_COLUMNS = (
     "title", "format", "captains_per_division", "team_size", "division_count", "half_budget_cap",
-    "timezone", "tournament_date", "auction_date", "closes_at", "rules_url",
+    "timezone", "tournament_date", "auction_date", "close_date", "close_time", "closes_at", "rules_url",
     "signup_channel_id", "admin_channel_id", "signup_message_id", "status_message_id",
 )
-_CONFIG_DATETIMES = {"tournament_date", "auction_date", "closes_at"}
+_CONFIG_DATETIMES = {"closes_at"}
+_CONFIG_DATES = {"tournament_date", "auction_date", "close_date"}
+# closes_at is derived from these; it is recomputed whenever one of them changes.
+_CLOSE_KEYS = {"close_date", "close_time", "timezone"}
 
 
 class NicknameTaken(Exception):
@@ -194,7 +206,10 @@ class Database:
         row = await self._fetchone("SELECT * FROM guild_config WHERE guild_id = ?", (guild_id,))
         if row is None:
             async with self._lock:
-                await self._conn.execute("INSERT OR IGNORE INTO guild_config (guild_id) VALUES (?)", (guild_id,))
+                await self._conn.execute(
+                    "INSERT OR IGNORE INTO guild_config (guild_id, timezone) VALUES (?, ?)",
+                    (guild_id, timeutil.DEFAULT_TIMEZONE),
+                )
                 await self._conn.commit()
             row = await self._fetchone("SELECT * FROM guild_config WHERE guild_id = ?", (guild_id,))
             assert row is not None
@@ -203,6 +218,8 @@ class Database:
             value = row[column]
             if column in _CONFIG_DATETIMES:
                 value = _dt_from_db(value)
+            elif column in _CONFIG_DATES:
+                value = date.fromisoformat(value) if value else None
             values[column] = value
         values["format"] = Format(values["format"])
         values["half_budget_cap"] = bool(values["half_budget_cap"])
@@ -216,15 +233,22 @@ class Database:
         )
 
     async def update_config(self, guild_id: int, **changes: Any) -> GuildConfig:
-        unknown = set(changes) - set(_CONFIG_COLUMNS)
+        unknown = set(changes) - set(_CONFIG_COLUMNS) | ({"closes_at"} & set(changes))
         if unknown:
-            raise ValueError(f"Unknown config keys: {', '.join(sorted(unknown))}")
-        await self.get_config(guild_id)  # ensures the row exists
+            raise ValueError(f"Unknown or derived config keys: {', '.join(sorted(unknown))}")
+        current = await self.get_config(guild_id)  # also ensures the row exists
+        if changes.keys() & _CLOSE_KEYS:
+            close_date = changes.get("close_date", current.close_date)
+            close_time = changes.get("close_time", current.close_time)
+            tz_name = changes.get("timezone", current.timezone)
+            changes["closes_at"] = timeutil.closing_moment(close_date, close_time, tz_name) if close_date else None
         if changes:
             values = []
             for key, value in changes.items():
                 if key in _CONFIG_DATETIMES:
                     value = _dt_to_db(value)
+                elif key in _CONFIG_DATES:
+                    value = value.isoformat() if value else None
                 elif isinstance(value, bool):
                     value = int(value)
                 values.append(value)
@@ -252,6 +276,21 @@ class Database:
             sql = "DELETE FROM admin_user WHERE guild_id = ? AND user_id = ?"
         async with self._lock:
             await self._conn.execute(sql, (guild_id, user_id))
+            await self._conn.commit()
+
+    async def replace_admins(self, guild_id: int, *, role_ids: set[int] | None = None, user_ids: set[int] | None = None) -> None:
+        """Replaces the organiser roles and/or users with exactly these (None leaves that list as is)."""
+        async with self._lock:
+            if role_ids is not None:
+                await self._conn.execute("DELETE FROM admin_role WHERE guild_id = ?", (guild_id,))
+                await self._conn.executemany(
+                    "INSERT INTO admin_role (guild_id, role_id) VALUES (?, ?)", [(guild_id, r) for r in role_ids]
+                )
+            if user_ids is not None:
+                await self._conn.execute("DELETE FROM admin_user WHERE guild_id = ?", (guild_id,))
+                await self._conn.executemany(
+                    "INSERT INTO admin_user (guild_id, user_id) VALUES (?, ?)", [(guild_id, u) for u in user_ids]
+                )
             await self._conn.commit()
 
     # ------------------------------------------------------------- tournament

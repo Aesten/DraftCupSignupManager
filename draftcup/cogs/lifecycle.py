@@ -10,11 +10,9 @@ from typing import TYPE_CHECKING
 import discord
 from discord.ext import commands, tasks
 
-from .. import events
+from .. import actions, events
 from ..db import utcnow
 from ..exports import summarize_changes
-from ..models import State
-from ..notify import notify_admins
 from ..timeutil import discord_ts
 
 # Stale-export notices wait this long after the first change, so a burst is summarised in one notice.
@@ -42,10 +40,8 @@ class LifecycleCog(commands.Cog):
     async def close_due_signups(self) -> None:
         for tournament in await self.bot.db.open_tournaments_due(utcnow()):
             try:
-                await self.bot.db.set_state(tournament.id, State.CLOSED)
+                await actions.close_signups(self.bot, tournament.guild_id, None)
                 log.info("Closed signups of guild %s (scheduled)", tournament.guild_id)
-                await notify_admins(self.bot, tournament.guild_id, "🔒 Signups closed (scheduled close time reached).")
-                await events.tournament_changed(self.bot, tournament.guild_id)
             except Exception:
                 # One server's failure must not stop the scheduler for the others.
                 log.exception("Scheduled close failed for guild %s", tournament.guild_id)

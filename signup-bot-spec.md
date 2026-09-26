@@ -11,10 +11,10 @@ The output file format is defined in [`draftcup-bot-spec.md`](draftcup-bot-spec.
 ## 1. Scope and principles
 
 - **One tournament per Discord server** at a time. One bot process serves several servers (e.g. a test server next to the real one); each has its own config, admins, channels and data.
-- **Discord only**, no web interface. Users interact through buttons, modals and ephemeral replies. Admins also use slash commands and a dedicated admin channel.
+- **Discord only**, no web interface. Users interact through buttons, modals and ephemeral replies. Organisers configure and run everything from a **dashboard** in the admin channel (buttons and forms), plus a few slash commands for quick data access.
 - **Two channels:**
-  - **Signup channel:** one public signup post with buttons. Every reply to a user is **ephemeral**.
-  - **Admin channel:** persistent messages: a live status board, captain review cards, notifications, exports and an audit trail.
+  - **Signup channel:** nothing until signups open; then one public signup post with buttons, edited in place (live counts, closed). Every reply to a user is **ephemeral**.
+  - **Admin channel:** the pinned dashboard, captain review cards, notifications, exports and an audit trail.
 - **The bot doesn't handle tiers or budgets after export.** It computes both from the signup data. Any manual adjustment is made in the auction app after import.
 - **Stack:** Python 3.11+, discord.py ≥ 2.7 (radio groups in modals), SQLite through `aiosqlite`. It is self-hosted on the organiser's home server.
 
@@ -30,27 +30,28 @@ The output file format is defined in [`draftcup-bot-spec.md`](draftcup-bot-spec.
 
 ## 3. Tournament configuration
 
-Admins set these values with `/config` (§7). Defaults are shown.
+Organisers set everything with dashboard buttons (§6.1); no setting is typed as a command. Defaults are shown.
 
-| Setting | Default | Notes |
-|---|---|---|
-| `title` | `"Draft Cup"` | Max 80 chars. Used in the JSON and the export file names. |
-| `format` | `captainPick` | `captainPick` or `randomPick`. Chosen when opening signups (`/signups open format:`), and admins can still change it later. The derived tier (§4.1) is written in every export whatever the format, so it's available if the auctioneer switches format in the app. |
-| `captains_per_division` | `8` | Target number of teams per division. |
-| `team_size` | `6` | Players per team, **not counting** the captain. Range 5–10 (app limit). |
-| `division_count` | `2` | Number of divisions. Divisions are named `Division 1…N` by default and can be renamed. |
-| `half_budget_cap` | `true` | Written as `halfBudgetCapAtStart` on every division. |
-| `timezone` | `UTC` | IANA name, e.g. `Europe/Paris`. Used to read the dates admins enter. |
-| `tournament_date` | none | Match day (usually a Sunday). Shown in the player attendance text. |
-| `auction_date` | none | Auction day (usually a Saturday). Shown in the captain attendance text. |
-| `closes_at` | none | When signups close automatically. Required to open or reopen signups; admins can move it while signups are open. |
-| `rules_url` | none | A link shown in the agreement step. |
-| `admin_roles` | none | Discord roles with admin rights. |
-| `admin_users` | none | Individual users with admin rights. |
-| `signup_channel` | none | Set by `/setup`. |
-| `admin_channel` | none | Set by `/setup`. |
+| Setting | Default | Set with | Notes |
+|---|---|---|---|
+| `title` | `"Draft Cup"` | ⚙️ Tournament | Max 80 chars. Used in the JSON and the export file names. |
+| `format` | `captainPick` | ⚙️ Tournament | `captainPick` or `randomPick` (radio buttons). Shown on the public post. The derived tier (§4.1) is written in every export whatever the format, so it's available if the auctioneer switches format in the app. |
+| `team_size` | `6` | ⚙️ Tournament | Players per team, **not counting** the captain: 5–10 (app limit). |
+| `division_count` | `2` | ⚙️ Tournament | 1–5. Divisions are named `Division 1…N` until renamed with 🏷️ Divisions. |
+| `captains_per_division` | `8` | ⚙️ Tournament | Target number of teams per division. |
+| `close_date` | none | 📅 Dates | The day signups close. Required to open signups. |
+| `auction_date` | none | 📅 Dates | Auction day (usually a Saturday). Shown in the captain attendance text. |
+| `tournament_date` | none | 📅 Dates | Match day (usually a Sunday). Shown in the player attendance text. |
+| `rules_url` | none | 🔧 More settings | A link shown on the public post and in the agreement step. |
+| `timezone` | `Europe/Paris` | 🔧 More settings | IANA name. CET/CEST by default. |
+| `close_time` | `23:59` | 🔧 More settings | Signups close at this time, in `timezone`, on `close_date`. |
+| `half_budget_cap` | `true` | 🔧 More settings | Written as `halfBudgetCapAtStart` on every division. |
+| organisers | none | 👮 Organisers | Roles and members with admin rights, picked from Discord's role and member menus. |
+| `signup_channel`, `admin_channel` | none | `/setup` | The only setup command. |
 
-**Admins:** a user is an admin if they have one of `admin_roles`, are listed in `admin_users`, or have Discord's *Manage Server* permission. *Manage Server* works as a bootstrap so the first setup is always possible.
+**Dates** are days, not moments: Discord has no date picker, so the form asks for the **week** (menu of the current and next 24 weeks) and the **day** of that week (radio buttons). Dates in the past are refused. The auction and tournament dates are shown as plain text (e.g. *Saturday 24 October 2026*), so they don't shift with the reader's timezone; the close moment (`close_date` at `close_time`, `timezone`) is shown as a Discord timestamp. The Dates panel warns if signups close after the auction or the auction is after the tournament.
+
+**Admins:** a user is an admin (organiser) if they have one of the organiser roles, are an organiser member, or have Discord's *Manage Server* permission. *Manage Server* works as a bootstrap so the first setup is always possible.
 
 ## 4. Signup data
 
@@ -92,11 +93,12 @@ A captain candidate moved to the pool is exported as a player with the tier deri
 
 ### 5.1 Signup post
 
-The bot posts and maintains **one** message in the signup channel. The message:
+Nothing is posted in the signup channel before signups open. When an organiser opens them, the bot posts **one** message there, then only ever edits it:
 
-- has an embed with the title, the format, tournament and auction dates (shown as Discord timestamps), the close time, and a rules link;
-- has three buttons: **Sign up as Player**, **Sign up as Captain** and **My signup**;
-- is edited in place when the config or the open/closed state changes. When signups are closed, the buttons are disabled and the embed says so.
+- an embed with the title, the format, the auction and tournament days, the close moment (with a countdown), the rules link, and **live counts** (*43 players · 17 captain candidates signed up so far*), refreshed a few seconds after each change;
+- three buttons: **Sign up as Player**, **Sign up as Captain** and **My signup**;
+- when signups close, the same message is edited to say so, with the final counts, and the signup buttons are disabled. Reopening edits it back to open;
+- a new tournament (🗃️ New tournament) gets a new post on its first opening. If the post is deleted while signups are open, the bot posts it again.
 
 The buttons use persistent `custom_id`s so they keep working after a bot restart.
 
@@ -125,19 +127,41 @@ Every button replies with *"Signups are closed, contact an organiser."* **My sig
 
 ## 6. Admin channel
 
-### 6.1 Status board
+### 6.1 Dashboard
 
-The bot keeps **one pinned message** in the admin channel and edits it on every change. It shows:
+`/setup` posts the **dashboard** in the admin channel and pins it: one message, edited a few seconds after every change, with the live status on top and every organiser action as a button below.
 
-- **State:** draft, open (closes at …) or closed.
-- **Counts:** players, and captain candidates split into pending, picked and pool.
-- **Class split** of the pool: inf, arc, cav.
+**Status:**
+
+- **State:** preparing (nothing public yet), open (with countdown) or closed.
+- **Setup:** format and team size, divisions, close moment, auction and tournament days, rules link, and what's still missing before signups can open.
+- **Access:** channels and organisers.
+- **Signups:** players, captain candidates split into pending, picked and pool, pool size and class split.
 - **Coverage:** needs are computed for **1, 2 … `division_count`** divisions:
   - captains needed = `divisions × captains_per_division`;
   - players needed = `divisions × captains_per_division × team_size`;
   - both are compared with what is available. Example: `2 divisions: captains 17/16 ✅ · players 90/96 ⚠️ (−6)`. Captain candidates count as captains until they're moved to the pool; candidates beyond the captains needed also count as players, since unpicked captains join the pool.
-- **Divisions:** picked captains per division, e.g. `Division 1: 8/8 · Division 2: 5/8`.
-- **Export freshness:** for each export type, the last export time and whether it's up to date or stale (§9).
+  - picked captains per division, e.g. `Division 1 8/8 · Division 2 5/8`.
+- **Exports:** for each export type, the last export time and whether it's up to date or stale (§9).
+
+**Buttons** (only organisers can use them; each opens a form or a private panel):
+
+| Button | What it does |
+|---|---|
+| ⚙️ Tournament | Form: title, format, team size, number of divisions, teams per division. |
+| 📅 Dates | Panel with one button per date (signups close, auction, tournament), each opening the week + day picker. |
+| 🏷️ Divisions | Form with one name field per division. |
+| 👮 Organisers | Panel with a role menu and a member menu, pre-filled; saved as soon as a menu closes. |
+| 🔧 More settings | Form: rules link, timezone, close time, half budget cap. |
+| 🟢 Open signups | Shown before the first opening. Lists what's missing, or shows a summary and a confirm button; then publishes the public post (§5.1). |
+| 🔒 Close signups | Shown while open. Confirm, then closes immediately. |
+| 🟢 Reopen signups | Shown after closing. Opens the date picker for a new close day, then reopens. |
+| 🎖️ Captains | The bulk captain panel (§6.2). |
+| 🔎 Manage a signup | Pick a member: see their signup with tier and budget, then **Edit**, **Make captain/player**, **Withdraw**, or **Add as player/captain** if they aren't signed up. |
+| 📄 Export CSV · 📄 Export player list · 📦 Export tournament file | §9. |
+| 🗃️ New tournament | After closing: confirm, then archive every signup and start over (settings, organisers and division names are kept). |
+
+Forms re-check the values and answer with what changed. Settings that change exported content count as changes for the export tracker (§9.4).
 
 ### 6.2 Captain review cards
 
@@ -149,7 +173,7 @@ For each captain candidate, the bot posts a **card** in the admin channel showin
 
 A division button is refused if the division already has `captains_per_division` captains. The card shows the current status and who set it. If there are too many buttons for one row, they wrap to more rows; Discord allows up to 5 rows of 5 buttons.
 
-`/captains` gives the same actions in bulk: an ephemeral summary grouped by status and division, a select menu of candidates (up to 25, pending first), and one button per division plus Pool and Reset that apply to every selected candidate.
+The 🎖️ Captains button and `/captains` give the same actions in bulk: an ephemeral summary grouped by status and division, a select menu of candidates (up to 25, pending first), and one button per division plus Pool and Reset that apply to every selected candidate.
 
 ### 6.3 Notifications
 
@@ -159,32 +183,24 @@ These go to the admin channel as persistent messages:
 - signups opened or closed, whether automatically or by an admin;
 - admin actions, with the admin's name (the audit trail);
 - a **stale export** notice (§9);
+- settings changes, with who made them and the new values;
 - a warning when a signed-up user leaves the server. Their signup is kept and flagged in the CSV.
 
 ## 7. Admin commands
 
-All commands are slash commands restricted to admins, and all replies are ephemeral unless stated otherwise.
+Configuration happens on the dashboard (§6.1). Slash commands are kept to setup and quick data access; all are restricted to organisers and answer ephemerally.
 
 | Command | Purpose |
 |---|---|
-| `/setup signup_channel admin_channel` | Registers both channels and posts the signup post and the status board. |
-| `/config show` · `/config set <key> <value>` | Views or edits the settings in §3. Dates are entered as `YYYY-MM-DD HH:MM` in the configured timezone. |
-| `/admins add/remove role:` · `/admins add/remove user:` | Manages admin roles and users. |
-| `/division rename index name` | Renames a division. |
-| `/signups open format: closes_at:` | Opens signups for the chosen format (`captainPick` or `randomPick`) and schedules the close. Both are required; `closes_at` must be in the future. The format and close time are shown on the signup post. |
-| `/signups close` | Closes signups immediately, before the scheduled time. |
-| `/signups reopen closes_at:` | Reopens after a close, with a new close time (required, in the future). |
-| `/signup view signup:` | Shows a signup with its tier and budget. `signup:` autocompletes on nickname or Discord username. |
+| `/setup signup_channel admin_channel` | Registers both channels (checking the bot's permissions there) and posts or moves the dashboard. Posts nothing in the signup channel. |
+| `/signup view signup:` | Shows a signup with its tier and budget. `signup:` autocompletes on nickname or Discord username, which also works for members who left. |
 | `/signup edit signup:` | Opens the signup modal pre-filled, with no agreement step and no open/closed check. |
 | `/signup add user: role:` | Creates a signup for a member, e.g. one posted by DM, by opening the empty modal. The organiser vouches for the agreement. |
 | `/signup role signup: role:` | Switches between player and captain. |
 | `/signup remove signup:` | Withdraws a signup, after confirmation. |
 | `/captain signup: status: [division]` | Same as the card buttons (§6.2). |
 | `/captains` | Bulk view and actions (§6.2). |
-| `/export csv` | Returns `players.csv` and `captains.csv` (§9.1). Always available. |
-| `/export players` | Returns the player list JSON (§9.2). Always available. |
-| `/export tournament` | Returns `<title>.draftcup.json` (§9.3). Only available when its prerequisites are met. |
-| `/tournament reset` | Archives the current tournament and starts an empty one with the same config. It needs typed confirmation. |
+| `/export csv` · `/export players` · `/export tournament` | Same as the dashboard export buttons (§9). |
 
 Export files are **posted in the admin channel** (not ephemeral) with who requested them, so the team shares one history.
 
@@ -193,15 +209,16 @@ Admin edits aren't limited by the open/closed state and go through the same vali
 ## 8. Signup lifecycle
 
 ```
-draft ──/signups open──▶ open ──closes_at reached or /signups close──▶ closed
-                          ▲                                             │
-                          └──────────────── /signups reopen ────────────┘
+preparing ──🟢 Open signups──▶ open ──close moment reached or 🔒 Close signups──▶ closed
+                                ▲                                                    │
+                                └──────────── 🟢 Reopen signups (new close day) ─────┘
+closed ──🗃️ New tournament──▶ preparing (empty signup list)
 ```
 
-- **draft:** configuration only, and the signup buttons are disabled. Opening requires choosing a format and a close date.
-- **open:** users can sign up, edit and withdraw.
-- **closed:** only admins can change data. Captain picking can happen in any state, but normally happens after closing.
-- **Scheduled close:** the bot checks `closes_at` every 30 s and also at startup, so a close missed while the bot was down still happens when it restarts.
+- **preparing:** configuration only; nothing is public. Opening requires the channels, a close day whose close moment is in the future, the auction day and the tournament day.
+- **open:** users can sign up, edit and withdraw. The close moment can be moved (📅 Dates), but not into the past.
+- **closed:** only organisers can change data. Captain picking can happen in any state, but normally happens after closing.
+- **Scheduled close:** the bot checks the close moment every 30 s and also at startup, so a close missed while the bot was down still happens when it restarts.
 
 ## 9. Exports and the export tracker
 
@@ -244,7 +261,7 @@ The file name is `<title-slug>.draftcup.json`.
 
 - Every change to signup data or captain status increments the tournament **revision** and writes a row to the change log. So do settings that change exported content: `title`, `format`, `team_size`, `half_budget_cap`, `division_count` and division names.
 - Every export records its type (`csv`, `players`, `tournament`), the revision it was made at, the time and the admin.
-- An export type is **stale** when the current revision is higher than the revision of its latest export. The status board always shows this (§6.1).
+- An export type is **stale** when the current revision is higher than the revision of its latest export. The dashboard always shows this (§6.1).
 - When an export **becomes** stale, the bot posts one notice in the admin channel. The notice is sent 5 minutes after the first change, to group bursts, and summarises the changes since that export, e.g. *"Tournament export from 18:42 is stale: +2 players, 1 withdrawal, 1 captain moved to pool."* There is no further notice for that type until it is exported again.
 - Changes that don't affect an export's content, such as editing the Steam link after a `players` export, still count. This is conservative but simple.
 
@@ -254,7 +271,7 @@ SQLite, one file, with the path set by an environment variable. Main tables:
 
 | Table | Content |
 |---|---|
-| `guild_config` | One row per server: the settings in §3, plus channel and message IDs (signup post, status board). |
+| `guild_config` | One row per server: the settings in §3, the derived close moment (`closes_at`, UTC), and channel and message IDs (public post, dashboard). |
 | `tournament` | `id`, `guild_id`, `state`, `revision`, `created_at`, `archived_at`. |
 | `division` | `tournament_id`, `index`, `name`. |
 | `signup` | The fields in §4 plus `role`, `captain_status`, `division_index`, `status_set_by`, `withdrawn_at`, `left_server`, `review_message_id`. |

@@ -13,8 +13,8 @@ from .notify import AdminFeed
 from .permissions import BOT_PERMISSIONS, NotAdmin, invite_url
 from .settings import Settings
 from .views.captain_card import CaptainAction
+from .views.dashboard import DashboardView, Refresher
 from .views.signup_post import SignupPostView
-from .views.status_board import BoardRefresher
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class DraftCupBot(commands.Bot):
         )
         self.settings = settings
         self.feed = AdminFeed(self)
-        self.board = BoardRefresher(self)
+        self.refresher = Refresher(self)
         self.tree.on_error = self.on_app_command_error
 
     async def setup_hook(self) -> None:
@@ -44,8 +44,10 @@ class DraftCupBot(commands.Bot):
         for extension in EXTENSIONS:
             await self.load_extension(extension)
         # Persistent buttons, including on messages posted before a restart: one view instance handles
-        # every server's signup post (fixed custom IDs), and captain card buttons carry their signup ID.
+        # every server's signup post, another every dashboard (fixed custom IDs), and captain card
+        # buttons carry their signup ID.
         self.add_view(SignupPostView())
+        self.add_view(DashboardView())
         self.add_dynamic_items(CaptainAction)
 
         # Global commands: available in every server the bot is in (test and production alike).

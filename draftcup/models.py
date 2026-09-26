@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 
 from . import rules
@@ -48,9 +48,13 @@ class GuildConfig:
     team_size: int = 6
     division_count: int = 2
     half_budget_cap: bool = True
-    timezone: str = "UTC"
-    tournament_date: datetime | None = None
-    auction_date: datetime | None = None
+    timezone: str = "Europe/Paris"
+    tournament_date: date | None = None
+    auction_date: date | None = None
+    # Signups close on close_date at close_time (server timezone); closes_at is that moment in UTC,
+    # kept up to date by the database layer.
+    close_date: date | None = None
+    close_time: str = "23:59"
     closes_at: datetime | None = None
     rules_url: str | None = None
     signup_channel_id: int | None = None

@@ -1,4 +1,8 @@
-"""The public signup post and its persistent buttons (spec §5.1)."""
+"""The public signup post and its persistent buttons (spec §5.1).
+
+It only exists once signups have opened: posted on the first opening, then edited in place for live
+counts, closing and reopening. A new tournament gets a new post.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +13,8 @@ from typing import TYPE_CHECKING
 import discord
 
 from ..db import utcnow
-from ..models import GuildConfig, Role, State, Tournament
-from ..timeutil import discord_ts
+from ..models import GuildConfig, Role, Signup, State, Tournament
+from ..timeutil import discord_ts, format_day
 from . import signup_flow
 
 if TYPE_CHECKING:
@@ -30,22 +34,24 @@ def signups_open(tournament: Tournament, config: GuildConfig, now: datetime | No
     return config.closes_at is None or (now or utcnow()) < config.closes_at
 
 
-def build_embed(config: GuildConfig, tournament: Tournament) -> discord.Embed:
-    is_open = signups_open(tournament, config)
-    if is_open:
-        status = f"🟢 **Signups are open.** They close {discord_ts(config.closes_at, 'R')} ({discord_ts(config.closes_at, 'f')})."
+def build_embed(config: GuildConfig, tournament: Tournament, signups: list[Signup]) -> discord.Embed:
+    players = sum(1 for s in signups if s.role is Role.PLAYER)
+    captains = sum(1 for s in signups if s.role is Role.CAPTAIN)
+    counts = f"**{players}** player{'s' if players != 1 else ''} · **{captains}** captain candidate{'s' if captains != 1 else ''}"
+    if signups_open(tournament, config):
+        status = (
+            f"🟢 **Signups are open** until {format_day(config.close_date)} at {config.close_time} "
+            f"({discord_ts(config.closes_at, 'R')}).\n{counts} signed up so far."
+        )
         colour = discord.Colour.green()
-    elif tournament.state is State.DRAFT:
-        status = "⏳ Signups are not open yet."
-        colour = discord.Colour.light_grey()
     else:
-        status = "🔒 **Signups are closed.** Contact an organiser for any change."
+        status = f"🔒 **Signups are closed.** Contact an organiser for any change.\n{counts} signed up."
         colour = discord.Colour.red()
 
     embed = discord.Embed(title=config.title, description=status, colour=colour)
     embed.add_field(name="Format", value=config.format.label, inline=True)
-    embed.add_field(name="Auction (captains)", value=discord_ts(config.auction_date), inline=True)
-    embed.add_field(name="Tournament", value=discord_ts(config.tournament_date), inline=True)
+    embed.add_field(name="Auction (captains)", value=format_day(config.auction_date), inline=True)
+    embed.add_field(name="Tournament", value=format_day(config.tournament_date), inline=True)
     if config.rules_url:
         embed.add_field(name="Rules", value=config.rules_url, inline=False)
     embed.add_field(
@@ -81,35 +87,53 @@ class SignupPostView(discord.ui.View):
         await signup_flow.show_my_signup(interaction)
 
 
-async def post_or_refresh(bot: DraftCupBot, guild_id: int, *, repost: bool = False) -> discord.Message | None:
-    """Edits the signup post in place, or posts it if it's missing (or `repost` is set)."""
-    config = await bot.db.get_config(guild_id)
+async def _signup_channel(bot: DraftCupBot, config: GuildConfig) -> discord.TextChannel | discord.Thread:
     if config.signup_channel_id is None:
-        return None
-    tournament = await bot.db.active_tournament(guild_id)
-    embed = build_embed(config, tournament)
-    view = SignupPostView(is_open=signups_open(tournament, config))
-
+        raise RuntimeError("no signup channel is set")
     channel = bot.get_channel(config.signup_channel_id)
     if channel is None:
         channel = await bot.fetch_channel(config.signup_channel_id)
     if not isinstance(channel, (discord.TextChannel, discord.Thread)):
-        raise RuntimeError("The signup channel is not a text channel.")
+        raise RuntimeError("the signup channel is not a text channel")
+    return channel
 
-    if config.signup_message_id is not None and not repost:
+
+async def _render(bot: DraftCupBot, guild_id: int) -> tuple[GuildConfig, discord.Embed, SignupPostView]:
+    config = await bot.db.get_config(guild_id)
+    tournament = await bot.db.active_tournament(guild_id)
+    signups = await bot.db.list_active_signups(tournament.id)
+    return config, build_embed(config, tournament, signups), SignupPostView(is_open=signups_open(tournament, config))
+
+
+async def publish(bot: DraftCupBot, guild_id: int) -> discord.Message:
+    """Called when signups open: edits this tournament's post back to open, or posts it the first time."""
+    config, embed, view = await _render(bot, guild_id)
+    channel = await _signup_channel(bot, config)
+    if config.signup_message_id is not None:
         try:
             return await channel.get_partial_message(config.signup_message_id).edit(embed=embed, view=view)
         except discord.NotFound:
-            log.info("Signup post of guild %s was deleted, posting a new one", guild_id)
-
+            pass
     message = await channel.send(embed=embed, view=view)
     await bot.db.update_config(guild_id, signup_message_id=message.id)
     return message
 
 
 async def refresh(bot: DraftCupBot, guild_id: int) -> None:
-    """Best-effort refresh after a config or state change; failures are logged, not raised."""
+    """Edits the public post (counts, closed state…) if there is one. Never posts a new message,
+    except to replace a post deleted while signups are open. Failures are logged, not raised."""
     try:
-        await post_or_refresh(bot, guild_id)
+        config = await bot.db.get_config(guild_id)
+        if config.signup_message_id is None:
+            return
+        config, embed, view = await _render(bot, guild_id)
+        channel = await _signup_channel(bot, config)
+        try:
+            await channel.get_partial_message(config.signup_message_id).edit(embed=embed, view=view)
+        except discord.NotFound:
+            await bot.db.update_config(guild_id, signup_message_id=None)
+            if view.player.disabled is False:
+                log.info("Signup post of guild %s was deleted while open, posting it again", guild_id)
+                await publish(bot, guild_id)
     except (discord.HTTPException, RuntimeError):
         log.exception("Could not refresh the signup post of guild %s", guild_id)

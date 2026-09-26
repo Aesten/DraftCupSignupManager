@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from .bot import DraftCupBot
 
 
-# What the bot needs in the signup and admin channels. Pin Messages is for the status board; it replaced
+# What the bot needs in the signup and admin channels. Pin Messages is for the dashboard; it replaced
 # Manage Messages for pinning, so the bot never gets the right to delete other people's messages.
 BOT_PERMISSIONS = discord.Permissions(
     view_channel=True,

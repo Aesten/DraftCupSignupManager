@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 import logging
 from typing import TYPE_CHECKING
 
@@ -10,7 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from .. import events, exports, rules
+from .. import actions, events, rules
 from ..db import NicknameTaken, utcnow
 from ..models import CaptainStatus, ExportType, Role, Signup
 from ..permissions import admin_only, interaction_is_admin
@@ -176,45 +175,7 @@ class ManagementCog(commands.Cog):
     export_group = app_commands.Group(name="export", description="Export signups (posted in the admin channel).", guild_only=True)
 
     async def _export(self, interaction: Interaction, export_type: ExportType) -> None:
-        assert interaction.guild is not None
-        guild_id = interaction.guild.id
-        db = self.bot.db
-        config = await db.get_config(guild_id)
-        if config.admin_channel_id is None:
-            await interaction.response.send_message("❌ Run `/setup` first: exports are posted in the admin channel.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        tournament = await db.active_tournament(guild_id)
-        signups = await db.list_active_signups(tournament.id)
-        names = await db.division_names(tournament.id, config.division_count)
-        if export_type is ExportType.CSV:
-            result = exports.build_csv(config, signups, names)
-        elif export_type is ExportType.PLAYERS:
-            result = exports.build_player_list(config, signups)
-        else:
-            result = exports.build_tournament(config, signups, names)
-
-        if result.errors:
-            await interaction.followup.send(
-                "❌ Can't export yet:\n" + "\n".join(f"- {e}" for e in result.errors)
-                + ("\n\nAlso:\n" + "\n".join(f"- {w}" for w in result.warnings) if result.warnings else ""),
-                ephemeral=True,
-            )
-            return
-
-        warnings = "".join(f"\n⚠️ {w}" for w in result.warnings)
-        files = [discord.File(io.BytesIO(content), filename=name) for name, content in result.files.items()]
-        message = await self.bot.feed.send(
-            guild_id,
-            f"📦 **{export_type.label}** exported by {interaction.user.mention} (revision {tournament.revision}).{warnings}",
-            files=files,
-        )
-        if message is None:
-            await interaction.followup.send("❌ Couldn't post in the admin channel (check my permissions there).", ephemeral=True)
-            return
-        await db.record_export(tournament.id, export_type, tournament.revision, interaction.user.id)
-        await interaction.followup.send(f"✅ Posted: {message.jump_url}{warnings}", ephemeral=True)
-        self.bot.board.request(guild_id)
+        await actions.export(interaction, export_type)
 
     @export_group.command(name="csv", description="Full signup data as players.csv and captains.csv.")
     @admin_only()

@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -25,11 +25,32 @@ async def test_config_defaults_and_update(db):
     assert config.format is Format.CAPTAIN_PICK
     assert (config.captains_per_division, config.team_size, config.division_count) == (8, 6, 2)
 
-    closes = utcnow() + timedelta(days=2)
-    config = await db.update_config(GUILD, closes_at=closes, format=Format.RANDOM_PICK, half_budget_cap=False)
-    assert config.closes_at == closes
+    assert config.timezone == "Europe/Paris" and config.close_time == "23:59"
+
+    config = await db.update_config(
+        GUILD, close_date=date(2026, 10, 18), auction_date=date(2026, 10, 24), format=Format.RANDOM_PICK, half_budget_cap=False
+    )
+    assert config.close_date == date(2026, 10, 18) and config.auction_date == date(2026, 10, 24)
+    # 23:59 CEST (UTC+2) is 21:59 UTC.
+    assert config.closes_at == datetime(2026, 10, 18, 21, 59, tzinfo=timezone.utc)
     assert config.format is Format.RANDOM_PICK
     assert config.half_budget_cap is False
+
+    # closes_at follows the close time and the timezone; it can't be set directly.
+    config = await db.update_config(GUILD, close_time="18:00", timezone="Europe/London")
+    assert config.closes_at == datetime(2026, 10, 18, 17, 0, tzinfo=timezone.utc)
+    with pytest.raises(ValueError):
+        await db.update_config(GUILD, closes_at=utcnow())
+    config = await db.update_config(GUILD, close_date=None)
+    assert config.closes_at is None
+
+    await db.replace_admins(GUILD, role_ids={1, 2}, user_ids={3})
+    config = await db.get_config(GUILD)
+    assert config.admin_role_ids == {1, 2} and config.admin_user_ids == {3}
+    await db.replace_admins(GUILD, role_ids=set())
+    config = await db.get_config(GUILD)
+    assert config.admin_role_ids == set() and config.admin_user_ids == {3}
+    await db.replace_admins(GUILD, user_ids=set())
 
     await db.set_admin_role(GUILD, 10, True)
     await db.set_admin_user(GUILD, 20, True)
@@ -128,10 +149,10 @@ async def test_new_signup_requires_agreement(db):
 
 async def test_open_tournaments_due(db):
     t = await db.active_tournament(GUILD)
-    await db.update_config(GUILD, closes_at=utcnow() + timedelta(hours=1))
+    config = await db.update_config(GUILD, close_date=utcnow().date() + timedelta(days=2))
     await db.set_state(t.id, State.OPEN)
     assert await db.open_tournaments_due(utcnow()) == []
-    due = await db.open_tournaments_due(utcnow() + timedelta(hours=2))
+    due = await db.open_tournaments_due(config.closes_at + timedelta(seconds=1))
     assert [x.id for x in due] == [t.id]
 
 
@@ -255,6 +276,7 @@ async def test_find_signups(db):
 
 
 async def test_migrates_v1_database(tmp_path):
+    """A database created by the first version is upgraded, keeping its dates."""
     import aiosqlite
 
     from draftcup import db as db_module
@@ -263,9 +285,15 @@ async def test_migrates_v1_database(tmp_path):
     async with aiosqlite.connect(path) as conn:
         await conn.executescript(db_module._MIGRATIONS[0])
         await conn.execute("PRAGMA user_version = 1")
+        await conn.execute(
+            "INSERT INTO guild_config (guild_id, tournament_date, closes_at) VALUES (?, ?, ?)",
+            (GUILD, "2026-10-25T00:00:00+00:00", "2026-10-18T21:59:00+00:00"),
+        )
         await conn.commit()
     database = await Database.open(path)
     try:
+        config = await database.get_config(GUILD)
+        assert config.tournament_date == date(2026, 10, 25) and config.close_date == date(2026, 10, 18)
         t = await database.active_tournament(GUILD)
         await database.record_export(t.id, ExportType.CSV, 0, 1)
         assert ExportType.CSV in await database.latest_exports(t.id)
