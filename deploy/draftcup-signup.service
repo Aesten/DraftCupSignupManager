@@ -1,0 +1,21 @@
+# Example systemd unit. Adjust User and paths, then:
+#   sudo cp deploy/draftcup-signup.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now draftcup-signup
+#   journalctl -u draftcup-signup -f
+
+[Unit]
+Description=Draft Cup signup bot (Discord)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=draftcup
+WorkingDirectory=/opt/draftcup-signup
+EnvironmentFile=/opt/draftcup-signup/.env
+ExecStart=/opt/draftcup-signup/.venv/bin/python -m draftcup
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

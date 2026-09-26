@@ -188,7 +188,7 @@ All commands are slash commands restricted to admins, and all replies are epheme
 
 Export files are **posted in the admin channel** (not ephemeral) with who requested them, so the team shares one history.
 
-Admin edits aren't limited by the open/closed state and go through the same validation as user signups (§4), except that admins may override nickname uniqueness after confirming.
+Admin edits aren't limited by the open/closed state and go through the same validation as user signups (§4), including nickname uniqueness.
 
 ## 8. Signup lifecycle
 
