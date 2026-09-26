@@ -35,7 +35,7 @@ Admins set these values with `/config` (§7). Defaults are shown.
 | Setting | Default | Notes |
 |---|---|---|
 | `title` | `"Draft Cup"` | Max 80 chars. Used in the JSON and the export file names. |
-| `format` | `captainPick` | `captainPick` or `randomPick`. In Random Pick the `tier` field is left out of exports. |
+| `format` | `captainPick` | `captainPick` or `randomPick`. Chosen when opening signups (`/signups open format:`), and admins can still change it later. The derived tier (§4.1) is written in every export whatever the format, so it's available if the auctioneer switches format in the app. |
 | `captains_per_division` | `8` | Target number of teams per division. |
 | `team_size` | `6` | Players per team, **not counting** the captain. Range 5–10 (app limit). |
 | `division_count` | `2` | Number of divisions. Divisions are named `Division 1…N` by default and can be renamed. |
@@ -68,7 +68,7 @@ The bot also stores the Discord user ID, the username at signup time, `created_a
 
 ### 4.1 Derived values
 
-**Tier** (Captain Pick only), from the highest division played:
+**Tier**, from the highest division played. It is computed and exported in both formats:
 
 | Division | A | B | C | D | anything else / empty |
 |---|---|---|---|---|---|
@@ -94,7 +94,7 @@ A captain candidate moved to the pool is exported as a player with the tier deri
 
 The bot posts and maintains **one** message in the signup channel. The message:
 
-- has an embed with the title, tournament and auction dates (shown as Discord timestamps), the close time, and a rules link;
+- has an embed with the title, the format, tournament and auction dates (shown as Discord timestamps), the close time, and a rules link;
 - has three buttons: **Sign up as Player**, **Sign up as Captain** and **My signup**;
 - is edited in place when the config or the open/closed state changes. When signups are closed, the buttons are disabled and the embed says so.
 
@@ -171,7 +171,7 @@ All commands are slash commands restricted to admins, and all replies are epheme
 | `/config show` · `/config set <key> <value>` | Views or edits the settings in §3. Dates are entered as `YYYY-MM-DD HH:MM` in the configured timezone. |
 | `/admins add/remove role:` · `/admins add/remove user:` | Manages admin roles and users. |
 | `/division rename index name` | Renames a division. |
-| `/signups open [closes_at]` | Opens signups and optionally schedules the close. |
+| `/signups open format: [closes_at]` | Opens signups for the chosen format (`captainPick` or `randomPick`) and optionally schedules the close. The format is shown on the signup post. |
 | `/signups close` | Closes signups immediately. |
 | `/signups reopen [closes_at]` | Reopens after a close. |
 | `/signup view user:` | Shows a signup. The user can be picked as a Discord member, or by nickname with autocomplete. |
@@ -198,7 +198,7 @@ draft ──/signups open──▶ open ──closes_at reached or /signups clos
                           └──────────────── /signups reopen ────────────┘
 ```
 
-- **draft:** configuration only, and the signup buttons are disabled.
+- **draft:** configuration only, and the signup buttons are disabled. Opening requires choosing a format.
 - **open:** users can sign up, edit and withdraw.
 - **closed:** only admins can change data. Captain picking can happen in any state, but normally happens after closing.
 - **Scheduled close:** the bot checks `closes_at` every 30 s and also at startup, so a close missed while the bot was down still happens when it restarts.
@@ -216,7 +216,7 @@ Columns: `nickname, discord_id, discord_username, steam_url, class, highest_divi
 
 ### 9.2 Player list (late signups)
 
-`{ "players": [ { "name", "classes": [class], "tier" } ] }`, following §6 of the file-format spec. It holds the pool: players plus pool captains. Captain candidates still `pending` are left out, and a warning lists them. `tier` is left out in Random Pick.
+`{ "players": [ { "name", "classes": [class], "tier" } ] }`, following §6 of the file-format spec. It holds the pool: players plus pool captains. Captain candidates still `pending` are left out, and a warning lists them. `tier` is always included (§3, `format`).
 
 ### 9.3 Tournament file
 
@@ -232,7 +232,7 @@ Columns: `nickname, discord_id, discord_username, steam_url, class, highest_divi
 
 **Content:** as in the file-format spec:
 
-- `title`, `format`, and `tierMinimums` (defaults) in Captain Pick;
+- `title`, `format`, and `tierMinimums` (defaults), in both formats;
 - `players`: the pool, built as in §9.2;
 - `divisions`: one per configured division that has captains, each with `name`, `teamSize`, `halfBudgetCapAtStart`, and `captains` (`name`, `class`, `budget`);
 - no `id` or `session` fields. The export is always a one-shot import.
